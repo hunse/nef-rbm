@@ -147,6 +147,39 @@ class RBM(object):
         data = self.propdown(code)
         return theano.function([code], data)
 
+    def statistical_encoders(self, data):
+        x = data - data.mean(0)
+        corr = np.dot(x.T, x) / x.shape[0]
+
+        w, v = np.linalg.eigh(corr)
+        # plt.figure(1)
+        # plt.clf()
+        # plt.plot(w)
+        # # plt.show()
+
+        c2 = np.dot(v * w[None,:], v.T)
+        # i, j = 300, 305
+        # print corr[i:j,i:j]
+        # print c2[i:j,i:j]
+        assert np.allclose(corr, c2, atol=1e-6)
+
+        # gamma = np.linalg.cholesky(corr)
+        w = np.sqrt(np.maximum(w, 0))
+        gamma = w[:,None] * v.T
+
+        encoders = np.random.normal(size=(self.n_hid, self.n_vis))
+        encoders = np.dot(encoders, gamma)
+
+        # plt.figure(1)
+        # plt.clf()
+        # plotting.tile(encoders.reshape(-1, 28, 28))
+        # plt.show()
+
+        if self.mask is not None:
+            encoders *= self.mask
+        encoders /= norm(encoders, axis=1, keepdims=True)
+        self.encoders.set_value(encoders.astype(theano.config.floatX))
+
     # def pretrain(self, batches, dbn=None, test_images=None,
     #              n_epochs=10, **train_params):
     def pretrain(self, images):
@@ -159,13 +192,14 @@ class RBM(object):
 
         print "Trained RBM: %0.3f" % (info['rmses'].mean())
 
-    def backprop(self, images):
+    def backprop(self, images, rate=0.1):
         dtype = theano.config.floatX
 
+        # params = []
         params = [self.encoders, self.bias, self.decoders]
 
         # --- compute backprop function
-        x = theano.shared(images.astype(dtype), name='images')
+        x = tt.matrix('images')
 
         # compute coding error
         y = self.propdown(self.propup(x))
@@ -174,36 +208,68 @@ class RBM(object):
 
         # compute gradients
         grads = tt.grad(error, params)
-        f_df = theano.function([], [error] + grads)
+        updates = collections.OrderedDict()
+        for param, grad in zip(params, grads):
+            updates[param] = param - tt.cast(rate, dtype) * grad
 
-        np_params = [param.get_value() for param in params]
-        def split_p(p):
-            split = []
-            i = 0
-            for param in np_params:
-                split.append(p[i:i + param.size].reshape(param.shape))
-                i += param.size
-            return split
+        train_dbn = theano.function([x], error, updates=updates)
 
-        def form_p(params):
-            return np.hstack([param.flatten() for param in params])
+        # --- perform SGD
+        batches = images.reshape(-1, 20, images.shape[1])
 
-        def f_df_wrapper(p):
-            for param, value in zip(params, split_p(p)):
-                param.set_value(value.astype(param.dtype))
+        n_epochs = 10
+        for epoch in range(n_epochs):
+            costs = []
+            for batch in batches:
+                costs.append(train_dbn(batch))
 
-            outs = f_df()
-            cost, grads = outs[0], outs[1:]
-            grad = form_p(grads)
-            return cost.astype('float64'), grad.astype('float64')
+            print "Epoch %d: %0.3f" % (epoch, np.mean(costs))
 
-        # run L_BFGS
-        p0 = form_p(np_params)
-        p_opt, mincost, info = scipy.optimize.lbfgsb.fmin_l_bfgs_b(
-            f_df_wrapper, p0, maxfun=100, iprint=1)
+    # def backprop(self, images):
+    #     dtype = theano.config.floatX
 
-        for param, value in zip(params, split_p(p_opt)):
-            param.set_value(value.astype(param.dtype), borrow=False)
+    #     params = [self.encoders, self.bias, self.decoders]
+
+    #     # --- compute backprop function
+    #     x = theano.shared(images.astype(dtype), name='images')
+
+    #     # compute coding error
+    #     y = self.propdown(self.propup(x))
+    #     rmses = tt.sqrt(tt.mean((x - y)**2, axis=1))
+    #     error = tt.mean(rmses)
+
+    #     # compute gradients
+    #     grads = tt.grad(error, params)
+    #     f_df = theano.function([], [error] + grads)
+
+    #     np_params = [param.get_value() for param in params]
+    #     def split_p(p):
+    #         split = []
+    #         i = 0
+    #         for param in np_params:
+    #             split.append(p[i:i + param.size].reshape(param.shape))
+    #             i += param.size
+    #         return split
+
+    #     def form_p(params):
+    #         return np.hstack([param.flatten() for param in params])
+
+    #     def f_df_wrapper(p):
+    #         for param, value in zip(params, split_p(p)):
+    #             param.set_value(value.astype(param.dtype))
+
+    #         outs = f_df()
+    #         cost, grads = outs[0], outs[1:]
+    #         grad = form_p(grads)
+    #         return cost.astype('float64'), grad.astype('float64')
+
+    #     # run L_BFGS
+    #     p0 = form_p(np_params)
+    #     p_opt, mincost, info = scipy.optimize.lbfgsb.fmin_l_bfgs_b(
+    #         f_df_wrapper, p0, maxfun=100, iprint=1)
+
+    #     for param, value in zip(params, split_p(p_opt)):
+    #         param.set_value(value.astype(param.dtype), borrow=False)
 
     def plot_rates(self):
         x = tt.matrix('x')
@@ -256,7 +322,7 @@ class DBN(object):
         recons = self.propdown(self.propup(images))
         return theano.function([images], recons)
 
-    def backprop(self, images):
+    def backprop(self, images, rate=0.1):
         dtype = theano.config.floatX
 
         params = []
@@ -264,7 +330,7 @@ class DBN(object):
             params.extend([rbm.encoders, rbm.decoders])
 
         # --- compute backprop function
-        x = theano.shared(images.astype(dtype), name='images')
+        x = tt.matrix('images')
 
         # compute coding error
         y = self.propdown(self.propup(x))
@@ -273,36 +339,71 @@ class DBN(object):
 
         # compute gradients
         grads = tt.grad(error, params)
-        f_df = theano.function([], [error] + grads)
 
-        np_params = [param.get_value() for param in params]
-        def split_p(p):
-            split = []
-            i = 0
-            for param in np_params:
-                split.append(p[i:i + param.size].reshape(param.shape))
-                i += param.size
-            return split
+        updates = collections.OrderedDict()
+        for param, grad in zip(params, grads):
+            updates[param] = param - tt.cast(rate, dtype) * grad
 
-        def form_p(params):
-            return np.hstack([param.flatten() for param in params])
+        train_dbn = theano.function([x], error, updates=updates)
 
-        # --- find target codes
-        def f_df_wrapper(p):
-            for param, value in zip(params, split_p(p)):
-                param.set_value(value.astype(param.dtype))
+        # --- perform SGD
+        batches = images.reshape(-1, 20, images.shape[1])
 
-            outs = f_df()
-            cost, grads = outs[0], outs[1:]
-            grad = form_p(grads)
-            return cost.astype('float64'), grad.astype('float64')
+        n_epochs = 10
+        for epoch in range(n_epochs):
+            costs = []
+            for batch in batches:
+                costs.append(train_dbn(batch))
 
-        p0 = form_p(np_params)
-        p_opt, mincost, info = scipy.optimize.lbfgsb.fmin_l_bfgs_b(
-            f_df_wrapper, p0, maxfun=100, iprint=1)
+            print "Epoch %d: %0.3f" % (epoch, np.mean(costs))
 
-        for param, value in zip(params, split_p(p_opt)):
-            param.set_value(value.astype(param.dtype), borrow=False)
+    # def backprop(self, images):
+    #     dtype = theano.config.floatX
+
+    #     params = []
+    #     for rbm in self.rbms:
+    #         params.extend([rbm.encoders, rbm.decoders])
+
+    #     # --- compute backprop function
+    #     x = theano.shared(images.astype(dtype), name='images')
+
+    #     # compute coding error
+    #     y = self.propdown(self.propup(x))
+    #     rmses = tt.sqrt(tt.mean((x - y)**2, axis=1))
+    #     error = tt.mean(rmses)
+
+    #     # compute gradients
+    #     grads = tt.grad(error, params)
+    #     f_df = theano.function([], [error] + grads)
+
+    #     np_params = [param.get_value() for param in params]
+    #     def split_p(p):
+    #         split = []
+    #         i = 0
+    #         for param in np_params:
+    #             split.append(p[i:i + param.size].reshape(param.shape))
+    #             i += param.size
+    #         return split
+
+    #     def form_p(params):
+    #         return np.hstack([param.flatten() for param in params])
+
+    #     # --- find target codes
+    #     def f_df_wrapper(p):
+    #         for param, value in zip(params, split_p(p)):
+    #             param.set_value(value.astype(param.dtype))
+
+    #         outs = f_df()
+    #         cost, grads = outs[0], outs[1:]
+    #         grad = form_p(grads)
+    #         return cost.astype('float64'), grad.astype('float64')
+
+    #     p0 = form_p(np_params)
+    #     p_opt, mincost, info = scipy.optimize.lbfgsb.fmin_l_bfgs_b(
+    #         f_df_wrapper, p0, maxfun=100, iprint=1)
+
+    #     for param, value in zip(params, split_p(p_opt)):
+    #         param.set_value(value.astype(param.dtype), borrow=False)
 
     def test_reconstruction(self, images):
         recons = self.reconstruct(images)
@@ -338,9 +439,12 @@ dbn = DBN()
 data = train_images[:10000]
 valid_images = valid_images[:1000]
 for i in range(n_layers):
+
+
     rbm = RBM(shapes[i], shapes[i+1], rf_shape=rf_shapes[i])
+    # rbm.statistical_encoders(data)
     rbm.pretrain(data)
-    # rbm.backprop(data)
+    rbm.backprop(data)
 
     data = rbm.encode(data)
 
@@ -355,7 +459,15 @@ recons = dbn.reconstruct(test_images)
 plotting.compare(
     [test_images.reshape(-1, 28, 28), recons.reshape(-1, 28, 28)],
     rows=5, cols=20)
+# plt.show()
+
+
+dbn.backprop(train_images[:10000])
+
+plt.figure(199)
+plt.clf()
+recons = dbn.reconstruct(test_images)
+plotting.compare(
+    [test_images.reshape(-1, 28, 28), recons.reshape(-1, 28, 28)],
+    rows=5, cols=20)
 plt.show()
-
-
-dbn.backprop(train_images)
