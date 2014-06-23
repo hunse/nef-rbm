@@ -36,7 +36,8 @@ class RBM(object):
     # --- define RBM parameters
     def __init__(self, vis_shape, n_hid,
                  encoders=None,
-                 intercepts=dists.Uniform(-1, 1),
+                 # intercepts=dists.Uniform(-1, 1),
+                 intercepts=dists.Uniform(-0.5, -0.5),
                  # max_rates=dists.Uniform(150, 250),
                  # max_rates=dists.Uniform(1, 1),
                  max_rate=200,
