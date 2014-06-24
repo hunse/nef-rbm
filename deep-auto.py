@@ -1,6 +1,10 @@
 """
-Train an MNIST RBM, based off the demo code at
-    http://www.cs.toronto.edu/~hinton/MatlabForSciencePaper.html
+Train a deep autoencoder using the NEF for pretraining
+
+TODO:
+- Starting with statistical encoders then doing backprop on a layer causes
+  problems when moving to the next layer. Could this be because the next layer's
+  statistical encoders are somehow degenerate?
 """
 
 import collections
@@ -195,7 +199,7 @@ class RBM(object):
 
         print "Trained RBM: %0.3f" % (info['rmses'].mean())
 
-    def backprop(self, images, rate=0.1):
+    def backprop(self, images, rate=0.1, n_epochs=10):
         dtype = theano.config.floatX
 
         # params = []
@@ -221,7 +225,6 @@ class RBM(object):
         batches = images.reshape(-1, 20, images.shape[1])
         assert np.isfinite(batches).all()
 
-        n_epochs = 10
         for epoch in range(n_epochs):
             costs = []
             for batch in batches:
