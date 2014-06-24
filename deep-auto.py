@@ -119,17 +119,15 @@ class RBM(object):
         sigma = tt.cast(0.05, dtype=dtype)
         tau_ref = tt.cast(self.tau_ref, dtype=dtype)
         tau_rc = tt.cast(self.tau_rc, dtype=dtype)
-        gain = tt.cast(self.gain, dtype=dtype)
-        bias = tt.cast(self.bias, dtype=dtype)
 
-        j = gain * x + bias - 1
+        j = self.gain * x + self.bias - 1
         j = sigma * tt.log1p(tt.exp(j / sigma))
         v = 1. / (tau_ref + tau_rc * tt.log1p(1. / j))
-        return tt.switch(j > 0, v, 0.0)
+        return tt.switch(j > 0, v, 0.0) / self.max_rates
 
     def propup(self, x):
         e = tt.dot(x, self.encoders.T)
-        return self.rates(e) / self.max_rates
+        return self.rates(e)
 
     def propdown(self, y):
         assert self.decoders is not None
@@ -146,6 +144,11 @@ class RBM(object):
         code = tt.matrix('code')
         data = self.propdown(code)
         return theano.function([code], data)
+
+    def check_params(self):
+        for param in [self.encoders, self.max_rates, self.gain, self.bias, self.decoders]:
+            if param is not None:
+                assert np.isfinite(param.get_value()).all()
 
     def statistical_encoders(self, data):
         x = data - data.mean(0)
@@ -216,12 +219,14 @@ class RBM(object):
 
         # --- perform SGD
         batches = images.reshape(-1, 20, images.shape[1])
+        assert np.isfinite(batches).all()
 
         n_epochs = 10
         for epoch in range(n_epochs):
             costs = []
             for batch in batches:
                 costs.append(train_dbn(batch))
+                self.check_params()
 
             print "Epoch %d: %0.3f" % (epoch, np.mean(costs))
 
@@ -322,12 +327,12 @@ class DBN(object):
         recons = self.propdown(self.propup(images))
         return theano.function([images], recons)
 
-    def backprop(self, images, rate=0.1):
+    def backprop(self, images, rate=0.1, n_epochs=10):
         dtype = theano.config.floatX
 
         params = []
         for rbm in self.rbms:
-            params.extend([rbm.encoders, rbm.decoders])
+            params.extend([rbm.encoders, rbm.bias, rbm.decoders])
 
         # --- compute backprop function
         x = tt.matrix('images')
@@ -348,8 +353,6 @@ class DBN(object):
 
         # --- perform SGD
         batches = images.reshape(-1, 20, images.shape[1])
-
-        n_epochs = 10
         for epoch in range(n_epochs):
             costs = []
             for batch in batches:
@@ -442,9 +445,9 @@ for i in range(n_layers):
 
 
     rbm = RBM(shapes[i], shapes[i+1], rf_shape=rf_shapes[i])
-    # rbm.statistical_encoders(data)
+    rbm.statistical_encoders(data)
     rbm.pretrain(data)
-    rbm.backprop(data)
+    # rbm.backprop(data)
 
     data = rbm.encode(data)
 
@@ -458,16 +461,16 @@ plt.clf()
 recons = dbn.reconstruct(test_images)
 plotting.compare(
     [test_images.reshape(-1, 28, 28), recons.reshape(-1, 28, 28)],
-    rows=5, cols=20)
-# plt.show()
+    rows=5, cols=20, vlims=(-1, 1))
+plt.show()
+# plt.savefig('nef.png')
 
-
-dbn.backprop(train_images[:10000])
+dbn.backprop(train_images[:10000], n_epochs=10)
 
 plt.figure(199)
 plt.clf()
 recons = dbn.reconstruct(test_images)
 plotting.compare(
     [test_images.reshape(-1, 28, 28), recons.reshape(-1, 28, 28)],
-    rows=5, cols=20)
+    rows=5, cols=20, vlims=(-1, 1))
 plt.show()
