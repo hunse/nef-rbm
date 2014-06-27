@@ -38,7 +38,7 @@ def nlif(x):
     tau_rc = tt.cast(0.02, dtype=dtype)
     alpha = tt.cast(1, dtype=dtype)
     beta = tt.cast(1, dtype=dtype)
-    amp = tt.cast(1. / 65, dtype=dtype)
+    amp = tt.cast(1., dtype=dtype)
 
     j = alpha * x + beta - 1
     j = sigma * tt.log1p(tt.exp(j / sigma))
@@ -66,7 +66,7 @@ class Autoencoder(object):
 
         # create initial weights and biases
         if W is None:
-            Wmag = 4 * np.sqrt(6. / (self.n_vis + self.n_hid))
+            Wmag = 0.1 * np.sqrt(6. / (self.n_vis + self.n_hid))
             W = rng.uniform(
                 low=-Wmag, high=Wmag, size=(self.n_vis, self.n_hid)
             ).astype(self.dtype)
@@ -179,7 +179,6 @@ class Autoencoder(object):
         # --- perform SGD
         batches = images.reshape(-1, batch_size, images.shape[1])
         assert np.isfinite(batches).all()
-        print batches.shape
 
         for epoch in range(n_epochs):
             costs = []
@@ -209,7 +208,6 @@ class Autoencoder(object):
             plt.draw()
 
 
-
 # --- load the data
 filename = 'mnist.pkl.gz'
 
@@ -224,7 +222,6 @@ train_images, _ = train
 valid_images, _ = valid
 test_images, _ = test
 
-# if GAUSSIAN:
 for images in [train_images, valid_images, test_images]:
     images -= images.mean(axis=0, keepdims=True)
     images /= np.maximum(images.std(axis=0, keepdims=True), 3e-1)
@@ -239,10 +236,7 @@ n_hid = 200
 # n_hid = 150
 
 n_epochs = 15
-# rate = 0.01 if GAUSSIAN else 0.1
-# rate = 0.001
-rate = 1
-# rate = 0.01
+rate = 0.05
 batch_size = 100
 # batch_size = 20
 
