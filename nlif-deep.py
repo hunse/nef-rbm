@@ -12,13 +12,15 @@ import numpy as np
 import matplotlib.pyplot as plt
 import scipy.optimize
 
-# os.environ['THEANO_FLAGS'] = 'device=gpu, floatX=float32'
+os.environ['THEANO_FLAGS'] = 'device=gpu, floatX=float32'
 # os.environ['THEANO_FLAGS'] = 'mode=DEBUG_MODE'
 import theano
 import theano.tensor as tt
 import theano.sandbox.rng_mrg
 
 import plotting
+
+from hunse_tools import tic, toc
 
 plt.ion()
 
@@ -134,12 +136,16 @@ class Autoencoder(object):
             shape = (self.n_hid,) + self.rf_shape
             return filters.reshape(shape)
 
-    def propup(self, x):
+    def propup(self, x, noise=0):
         a = tt.dot(x, self.W) + self.c
+        if noise > 0:
+            a += self.theano_rng.normal(
+                size=a.shape, std=noise, dtype=theano.config.floatX)
         return a if self.hidlinear else nlif(a)
 
     def propdown(self, y):
-        a = tt.dot(y, self.W.T) + self.b
+        V = self.V if hasattr(self, 'V') else self.W.T
+        a = tt.dot(y, V) + self.b
         return a if self.vislinear else nlif(a)
 
     @property
@@ -168,10 +174,10 @@ class Autoencoder(object):
         # --- compute backprop function
         x = tt.matrix('images')
         xn = x + self.theano_rng.normal(size=x.shape, std=1, dtype=dtype)
+        y = self.propup(xn, noise=0.1)
+        z = self.propdown(y)
 
         # compute coding error
-        y = self.propup(xn)
-        z = self.propdown(y)
         rmses = tt.sqrt(tt.mean((x - z)**2, axis=1))
         error = tt.mean(rmses)
 
@@ -185,6 +191,7 @@ class Autoencoder(object):
             updates[self.W] = updates[self.W] * self.mask
 
         train_dbn = theano.function([x], error, updates=updates)
+        reconstruct = deep.reconstruct
 
         # --- perform SGD
         batches = images.reshape(-1, batch_size, images.shape[1])
@@ -203,7 +210,7 @@ class Autoencoder(object):
                 # plot reconstructions on test set
                 plt.figure(2)
                 plt.clf()
-                recons = deep.reconstruct(test_images)
+                recons = reconstruct(test_images)
                 show_recons(test_images, recons)
                 plt.draw()
 
@@ -225,10 +232,10 @@ class DeepAutoencoder(object):
         self.seed = 90
         self.theano_rng = theano.sandbox.rng_mrg.MRG_RandomStreams(seed=self.seed)
 
-    def propup(self, images):
+    def propup(self, images, noise=0):
         codes = images
         for auto in self.autos:
-            codes = auto.propup(codes)
+            codes = auto.propup(codes, noise=noise)
         return codes
 
     def propdown(self, codes):
@@ -254,7 +261,8 @@ class DeepAutoencoder(object):
         x = tt.matrix('images')
         y = self.propup(x)
         z = self.propdown(y)
-        return theano.function([x], z)
+        f = theano.function([x], z)
+        return f
 
     def auto_sgd(self, images, test_images=None,
                  batch_size=100, rate=0.1, n_epochs=10):
@@ -285,11 +293,11 @@ class DeepAutoencoder(object):
                 updates[auto.W] = updates[auto.W] * auto.mask
 
         train_dbn = theano.function([x], error, updates=updates)
+        reconstruct = self.reconstruct
 
         # --- perform SGD
         batches = images.reshape(-1, batch_size, images.shape[1])
         assert np.isfinite(batches).all()
-        print batches.shape
 
         for epoch in range(n_epochs):
             costs = []
@@ -303,7 +311,68 @@ class DeepAutoencoder(object):
                 # plot reconstructions on test set
                 plt.figure(2)
                 plt.clf()
-                recons = deep.reconstruct(test_images)
+                recons = reconstruct(test_images)
+                show_recons(test_images, recons)
+                plt.draw()
+
+            # plot filters for first layer only
+            plt.figure(3)
+            plt.clf()
+            plotting.filters(self.autos[0].filters, rows=10, cols=20)
+            plt.draw()
+
+    def auto_sgd_down(self, images, test_images=None,
+                      batch_size=100, rate=0.1, n_epochs=10):
+        dtype = theano.config.floatX
+
+        params = []
+        for auto in self.autos:
+            auto.V = theano.shared(auto.W.get_value(borrow=False).T, name='V')
+            params.extend((auto.V, auto.b))
+
+        # --- compute backprop function
+        x = tt.matrix('images')
+        xn = x + self.theano_rng.normal(size=x.shape, std=1, dtype=dtype)
+
+        # compute coding error
+        y = self.propup(xn)
+        # z = y
+        # for auto in self.autos[::-1]:
+        #     z = auto.propdown(z, V=auto.V)
+        z = self.propdown(y)
+        rmses = tt.sqrt(tt.mean((x - z)**2, axis=1))
+        error = tt.mean(rmses)
+
+        # compute gradients
+        grads = tt.grad(error, params)
+        updates = collections.OrderedDict()
+        for param, grad in zip(params, grads):
+            updates[param] = param - tt.cast(rate, dtype) * grad
+
+        for auto in self.autos:
+            if auto.mask is not None:
+                updates[auto.V] = updates[auto.V] * auto.mask.T
+
+        train_dbn = theano.function([x], error, updates=updates)
+        reconstruct = self.reconstruct
+
+        # --- perform SGD
+        batches = images.reshape(-1, batch_size, images.shape[1])
+        assert np.isfinite(batches).all()
+
+        for epoch in range(n_epochs):
+            costs = []
+            for batch in batches:
+                costs.append(train_dbn(batch))
+                # self.check_params()
+
+            print "Epoch %d: %0.3f" % (epoch, np.mean(costs))
+
+            if test_images is not None:
+                # plot reconstructions on test set
+                plt.figure(2)
+                plt.clf()
+                recons = reconstruct(test_images)
                 show_recons(test_images, recons)
                 plt.draw()
 
@@ -420,6 +489,90 @@ class DeepAutoencoder(object):
         for param, value in zip(params, split_p(p_opt)):
             param.set_value(value.astype(param.dtype), borrow=False)
 
+    def sgd(self, train_set, test_set,
+            rate=0.1, tradeoff=0.5, n_epochs=30, batch_size=100):
+        """Use SGD to do combined autoencoder and classifier training"""
+        dtype = theano.config.floatX
+        assert tradeoff >= 0 and tradeoff <= 1
+
+        params = []
+        for auto in self.autos:
+            auto.V = theano.shared(auto.W.get_value(borrow=False).T, name='V')
+            params.extend([auto.W, auto.V, auto.c, auto.b])
+
+        # --- compute backprop function
+        assert self.W is not None and self.b is not None
+        W = theano.shared(self.W.astype(dtype), name='Wc')
+        b = theano.shared(self.b.astype(dtype), name='bc')
+
+        x = tt.matrix('batch')
+        y = tt.ivector('labels')
+
+        xn = x + self.theano_rng.normal(size=x.shape, std=1, dtype=dtype)
+        yn = self.propup(xn, noise=0.1)
+
+        # compute classification error
+        p_y_given_x = tt.nnet.softmax(tt.dot(yn, W) + b)
+        y_pred = tt.argmax(p_y_given_x, axis=1)
+        nll = -tt.mean(tt.log(p_y_given_x)[tt.arange(y.shape[0]), y])
+        class_error = tt.mean(tt.neq(y_pred, y))
+
+        # compute autoencoder error
+        z = self.propdown(yn)
+        rmses = tt.sqrt(tt.mean((x - z)**2, axis=1))
+        auto_error = tt.mean(rmses)
+
+        cost = (tt.cast(1 - tradeoff, dtype) * auto_error
+                + tt.cast(tradeoff, dtype) * nll)
+        error = class_error
+
+        # compute gradients
+        grads = tt.grad(cost, params)
+        updates = collections.OrderedDict()
+        for param, grad in zip(params, grads):
+            updates[param] = param - tt.cast(rate, dtype) * grad
+
+        for auto in self.autos:
+            if auto.mask is not None:
+                updates[auto.W] = updates[auto.W] * auto.mask
+                updates[auto.V] = updates[auto.V] * auto.mask.T
+
+        train_dbn = theano.function([x, y], error, updates=updates)
+        reconstruct = self.reconstruct
+
+        # --- perform SGD
+        images, labels = train_set
+        ibatches = images.reshape(-1, batch_size, images.shape[1])
+        lbatches = labels.reshape(-1, batch_size).astype('int32')
+        assert np.isfinite(ibatches).all()
+
+        test_images, test_labels = test_set
+
+        for epoch in range(n_epochs):
+            costs = []
+            for batch, label in zip(ibatches, lbatches):
+                costs.append(train_dbn(batch, label))
+
+            # copy back parameters (for test function)
+            self.W = W.get_value()
+            self.b = b.get_value()
+
+            print "Epoch %d: %0.3f" % (epoch, np.mean(costs))
+
+            if test_images is not None:
+                # plot reconstructions on test set
+                plt.figure(2)
+                plt.clf()
+                recons = reconstruct(test_images)
+                show_recons(test_images, recons)
+                plt.draw()
+
+            # plot filters for first layer only
+            plt.figure(3)
+            plt.clf()
+            plotting.filters(self.autos[0].filters, rows=10, cols=20)
+            plt.draw()
+
     def test(self, test_set):
         assert self.W is not None and self.b is not None
 
@@ -488,13 +641,10 @@ show_recons(test_images, recons)
 print "recons error", rms(test_images - recons, axis=1).mean()
 
 # deep.auto_sgd(train_images, test_images, rate=0.3, n_epochs=30)
-
-print "recons error", rms(test_images - recons, axis=1).mean()
-
-# print "mean error", deep.test(test).mean()
+# print "recons error", rms(test_images - recons, axis=1).mean()
 
 # --- train classifier with backprop
-savename = 'classifier.npz'
+savename = "nlif-deep-c.npz"
 if not os.path.exists(savename):
     deep.train_classifier(train, test)
     np.savez(savename, W=deep.W, b=deep.b)
@@ -505,6 +655,39 @@ else:
 print "mean error", deep.test(test).mean()
 
 # --- train with backprop
-deep.backprop(train, test, n_epochs=100)
+if 0:
+    # deep.backprop(train, test, n_epochs=100)
+    deep.sgd(train, test, n_epochs=100)
+    print "mean error", deep.test(test).mean()
 
-print "mean error", deep.test(test).mean()
+# --- try to get autoencoder back
+if 0:
+    deep.auto_sgd_down(train_images, test_images, rate=0.6, n_epochs=30)
+    print "recons error", rms(test_images - recons, axis=1).mean()
+
+if 0:
+    # Try to learn linear decoder (doesn't work too well)
+    import nengo
+
+    codes = deep.encode(train_images)
+    decoders, info = nengo.decoders.LstsqL2()(codes, train_images)
+    print info['rmses'].mean()
+
+    recons = np.dot(codes, decoders)
+    print rms(train_images - recons, axis=1).mean()
+
+    plt.figure(99)
+    plt.clf()
+    show_recons(test_images, recons)
+
+if 0:
+    # save parameters
+    d = {}
+    d['weights'] = [auto.W.get_value() for auto in deep.autos]
+    d['biases'] = [auto.c.get_value() for auto in deep.autos]
+    if all(hasattr(auto, 'V') for auto in deep.autos):
+        d['rec_weights'] = [auto.V.get_value() for auto in deep.autos]
+        d['rec_biases'] = [auto.b.get_value() for auto in deep.autos]
+    d['Wc'] = deep.W
+    d['bc'] = deep.b
+    np.savez('nlif-deep.npz', **d)

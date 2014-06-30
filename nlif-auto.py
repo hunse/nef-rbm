@@ -129,7 +129,6 @@ class Autoencoder(object):
 
     def propdown(self, y):
         return tt.dot(y, self.W.T) + self.b
-        # return self.nonlinearity(tt.dot(y, self.W.T) + self.b)
 
     @property
     def encode(self):
@@ -155,8 +154,6 @@ class Autoencoder(object):
 
         # --- compute backprop function
         x = tt.matrix('images')
-
-        # xn = x
         xn = x + self.theano_rng.normal(size=x.shape, std=1, dtype=dtype)
 
         # compute coding error
@@ -179,7 +176,6 @@ class Autoencoder(object):
         # --- perform SGD
         batches = images.reshape(-1, batch_size, images.shape[1])
         assert np.isfinite(batches).all()
-        print batches.shape
 
         for epoch in range(n_epochs):
             costs = []
@@ -209,7 +205,6 @@ class Autoencoder(object):
             plt.draw()
 
 
-
 # --- load the data
 filename = 'mnist.pkl.gz'
 
@@ -224,14 +219,9 @@ train_images, _ = train
 valid_images, _ = valid
 test_images, _ = test
 
-# if GAUSSIAN:
 for images in [train_images, valid_images, test_images]:
     images -= images.mean(axis=0, keepdims=True)
     images /= np.maximum(images.std(axis=0, keepdims=True), 3e-1)
-
-# plt.figure(1)
-# plt.clf()
-# plt.imshow(train_images[0].reshape(28, 28), cmap='gray')
 
 # --- pretrain with CD
 # n_hid = 500
@@ -239,10 +229,7 @@ n_hid = 200
 # n_hid = 150
 
 n_epochs = 15
-# rate = 0.01 if GAUSSIAN else 0.1
-# rate = 0.001
 rate = 1
-# rate = 0.01
 batch_size = 100
 # batch_size = 20
 

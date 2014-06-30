@@ -39,19 +39,11 @@ def test_dots(t, dots):
     return test_labels[i] == labels[j]
 
 # --- load the RBM data
-template = "nlif-deep-%s.npz"
-
-layers = [0, 1]
-weights = []
-biases = []
-for layer in layers:
-    data = np.load(template % layer)['d'].item()
-    weights.append(data['W'])
-    biases.append(data['c'])
-
-data = np.load(template % 'c')
-Wc = data['W']
-bc = data['b']
+data = np.load('nlif-deep.npz')
+weights = data['weights']
+biases = data['biases']
+Wc = data['Wc']
+bc = data['bc']
 
 # --- load the testing data
 filename = 'mnist.pkl.gz'
