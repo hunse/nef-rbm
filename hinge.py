@@ -8,8 +8,9 @@ Theano op for multiclass hinge loss courtesy James Bergstra.
 # in which file?
 
 from theano import gof
-from theano.tensor.tsor_apply import Apply
+from theano.gof import Apply
 from theano import tensor
+from theano.tensor import DisconnectedType
 import numpy as np
 
 class MultiHingeMargin(gof.Op):
@@ -64,107 +65,112 @@ class MultiHingeMargin(gof.Op):
         z = self(*inputs)
         w = z.owner.outputs[1]
         gz, gw = g_outs
-        if gw is not None:
-            raise NotImplementedError()
         gX = gz.dimshuffle(0,'x') * w
-        return [gX, None]
-    def c_code_cache_version(self):
-        return (1,)
-    def c_code(self, node, name, (X, y_idx), (z,w), sub):
-        return '''
-        if ((%(X)s->descr->type_num != PyArray_DOUBLE) && (%(X)s->descr->type_num != PyArray_FLOAT))
-        {
-            PyErr_SetString(PyExc_TypeError, "types should be float or float64");
-            %(fail)s;
-        }
-        if ((%(y_idx)s->descr->type_num != PyArray_INT64)
-            && (%(y_idx)s->descr->type_num != PyArray_INT32)
-            && (%(y_idx)s->descr->type_num != PyArray_INT16)
-            && (%(y_idx)s->descr->type_num != PyArray_INT8))
-        {
-            PyErr_SetString(PyExc_TypeError, "y_idx not int8, int16, int32, or int64");
-            %(fail)s;
-        }
-        if ((%(X)s->nd != 2)
-            || (%(y_idx)s->nd != 1))
-        {
-            PyErr_SetString(PyExc_ValueError, "rank error");
-            %(fail)s;
-        }
-        if (%(X)s->dimensions[0] != %(y_idx)s->dimensions[0])
-        {
-            PyErr_SetString(PyExc_ValueError, "dy.shape[0] != sm.shape[0]");
-            %(fail)s;
-        }
-        if ((NULL == %(z)s)
-            || (%(z)s->dimensions[0] != %(X)s->dimensions[0]))
-        {
-            Py_XDECREF(%(z)s);
-            %(z)s = (PyArrayObject*) PyArray_SimpleNew(1, PyArray_DIMS(%(X)s),
-                                                        type_num_%(X)s);
-            if (!%(z)s)
-            {
-                PyErr_SetString(PyExc_MemoryError, "failed to alloc dx output");
-                %(fail)s;
-            }
-        }
-        if ((NULL == %(w)s)
-            || (%(w)s->dimensions[0] != %(X)s->dimensions[0])
-            || (%(w)s->dimensions[1] != %(X)s->dimensions[1]))
-        {
-            Py_XDECREF(%(w)s);
-            %(w)s = (PyArrayObject*) PyArray_SimpleNew(2, PyArray_DIMS(%(X)s),
-                                                        type_num_%(X)s);
-            if (!%(w)s)
-            {
-                PyErr_SetString(PyExc_MemoryError, "failed to alloc dx output");
-                %(fail)s;
-            }
-        }
+        if gw is None:
+            gY = None
+        elif isinstance(gw.type, DisconnectedType):
+            gY = DisconnectedType()()
+        else:
+            raise NotImplementedError()
+        return [gX, gY]
+    # def c_code_cache_version(self):
+    #     return (1,)
+    # def c_code(self, node, name, (X, y_idx), (z,w), sub):
+    #     return '''
+    #     if ((%(X)s->descr->type_num != PyArray_DOUBLE) && (%(X)s->descr->type_num != PyArray_FLOAT))
+    #     {
+    #         PyErr_SetString(PyExc_TypeError, "types should be float or float64");
+    #         %(fail)s;
+    #     }
+    #     if ((%(y_idx)s->descr->type_num != PyArray_INT64)
+    #         && (%(y_idx)s->descr->type_num != PyArray_INT32)
+    #         && (%(y_idx)s->descr->type_num != PyArray_INT16)
+    #         && (%(y_idx)s->descr->type_num != PyArray_INT8))
+    #     {
+    #         PyErr_SetString(PyExc_TypeError, "y_idx not int8, int16, int32, or int64");
+    #         %(fail)s;
+    #     }
+    #     if ((%(X)s->nd != 2)
+    #         || (%(y_idx)s->nd != 1))
+    #     {
+    #         PyErr_SetString(PyExc_ValueError, "rank error");
+    #         %(fail)s;
+    #     }
+    #     if (%(X)s->dimensions[0] != %(y_idx)s->dimensions[0])
+    #     {
+    #         PyErr_SetString(PyExc_ValueError, "dy.shape[0] != sm.shape[0]");
+    #         %(fail)s;
+    #     }
+    #     if ((NULL == %(z)s)
+    #         || (%(z)s->dimensions[0] != %(X)s->dimensions[0]))
+    #     {
+    #         Py_XDECREF(%(z)s);
+    #         %(z)s = (PyArrayObject*) PyArray_SimpleNew(1, PyArray_DIMS(%(X)s),
+    #                                                     type_num_%(X)s);
+    #         if (!%(z)s)
+    #         {
+    #             PyErr_SetString(PyExc_MemoryError, "failed to alloc dx output");
+    #             %(fail)s;
+    #         }
+    #     }
+    #     if ((NULL == %(w)s)
+    #         || (%(w)s->dimensions[0] != %(X)s->dimensions[0])
+    #         || (%(w)s->dimensions[1] != %(X)s->dimensions[1]))
+    #     {
+    #         Py_XDECREF(%(w)s);
+    #         %(w)s = (PyArrayObject*) PyArray_SimpleNew(2, PyArray_DIMS(%(X)s),
+    #                                                     type_num_%(X)s);
+    #         if (!%(w)s)
+    #         {
+    #             PyErr_SetString(PyExc_MemoryError, "failed to alloc dx output");
+    #             %(fail)s;
+    #         }
+    #     }
 
-        for (size_t i = 0; i < %(X)s->dimensions[0]; ++i)
-        {
-            const dtype_%(X)s* __restrict__ X_i = (dtype_%(X)s*) (%(X)s->data + %(X)s->strides[0] * i);
-            npy_intp SX = %(X)s->strides[1]/sizeof(dtype_%(X)s);
+    #     for (size_t i = 0; i < %(X)s->dimensions[0]; ++i)
+    #     {
+    #         const dtype_%(X)s* __restrict__ X_i = (dtype_%(X)s*) (%(X)s->data + %(X)s->strides[0] * i);
+    #         npy_intp SX = %(X)s->strides[1]/sizeof(dtype_%(X)s);
 
-            dtype_%(w)s* __restrict__ w_i = (dtype_%(w)s*) (%(w)s->data + %(w)s->strides[0] * i);
-            npy_intp Sw = %(w)s->strides[1]/sizeof(dtype_%(w)s);
+    #         dtype_%(w)s* __restrict__ w_i = (dtype_%(w)s*) (%(w)s->data + %(w)s->strides[0] * i);
+    #         npy_intp Sw = %(w)s->strides[1]/sizeof(dtype_%(w)s);
 
-            const dtype_%(y_idx)s y_i = ((dtype_%(y_idx)s*)(%(y_idx)s->data + %(y_idx)s->strides[0] * i))[0];
+    #         const dtype_%(y_idx)s y_i = ((dtype_%(y_idx)s*)(%(y_idx)s->data + %(y_idx)s->strides[0] * i))[0];
 
-            dtype_%(X)s X_i_max = X_i[0];
-            dtype_%(X)s X_at_y_i = X_i[0];
-            size_t X_i_argmax = 0;
-            size_t j = 1;
-            w_i[0] = 0;
+    #         dtype_%(X)s X_i_max = X_i[0];
+    #         dtype_%(X)s X_at_y_i = X_i[0];
+    #         size_t X_i_argmax = 0;
+    #         size_t j = 1;
+    #         w_i[0] = 0;
 
-            if (y_i == 0)
-            {
-                X_i_max = X_i[SX];
-                X_i_argmax = 1;
-                w_i[Sw] = 0;
-            }
-            for (; j < %(X)s->dimensions[1]; ++j)
-            {
-                dtype_%(X)s  X_ij = X_i[j*SX];
-                if (j == y_i)
-                {
-                    X_at_y_i = X_ij;
-                }
-                else if (X_ij > X_i_max)
-                {
-                    X_i_max = X_ij;
-                    X_i_argmax = j;
-                }
-                w_i[j*Sw] = 0;
-            }
-            if (0 < 1 - X_at_y_i + X_i_max)
-            {
-                ((dtype_%(z)s*)(%(z)s->data + %(z)s->strides[0] * i))[0]
-                    = 1 - X_at_y_i + X_i_max;
-                w_i[y_i*Sw] = -1;
-                w_i[X_i_argmax*Sw] = 1;
-            }
-        }
-        ''' % dict(locals(), **sub)
+    #         if (y_i == 0)
+    #         {
+    #             X_i_max = X_i[SX];
+    #             X_i_argmax = 1;
+    #             w_i[Sw] = 0;
+    #         }
+    #         for (; j < %(X)s->dimensions[1]; ++j)
+    #         {
+    #             dtype_%(X)s  X_ij = X_i[j*SX];
+    #             if (j == y_i)
+    #             {
+    #                 X_at_y_i = X_ij;
+    #             }
+    #             else if (X_ij > X_i_max)
+    #             {
+    #                 X_i_max = X_ij;
+    #                 X_i_argmax = j;
+    #             }
+    #             w_i[j*Sw] = 0;
+    #         }
+    #         if (0 < 1 - X_at_y_i + X_i_max)
+    #         {
+    #             ((dtype_%(z)s*)(%(z)s->data + %(z)s->strides[0] * i))[0]
+    #                 = 1 - X_at_y_i + X_i_max;
+    #             w_i[y_i*Sw] = -1;
+    #             w_i[X_i_argmax*Sw] = 1;
+    #         }
+    #     }
+    #     ''' % dict(locals(), **sub)
+
 multi_hinge_margin = MultiHingeMargin()

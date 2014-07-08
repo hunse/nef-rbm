@@ -11,8 +11,10 @@ import nengo
 
 # --- parameters
 presentation_time = 0.1
-Ncode = 10
-pstc = 0.006
+# Ncode = 10
+Ncode = 30
+# pstc = 0.006
+pstc = 0.004
 
 # --- functions
 # def norm(x, **kwargs):
@@ -79,54 +81,48 @@ neuron_params = dict(max_rates=max_rate, intercepts=intercept, neuron_type=neuro
 model = nengo.Network()
 with model:
     input_images = nengo.Node(output=get_image, label='images')
-    # print id(input_images)
-    # print input_images.size_out
 
-    W, b = weights[0], biases[0]
-    n = b.size
-    layer0 = nengo.Ensemble(n, 1, label='layer 0', neuron_type=neuron_type,
-                            max_rates=max_rate*np.ones(n),
-                            intercepts=intercept*np.ones(n))
-    bias = nengo.Node(output=b, label='bias 0')
-    nengo.Connection(bias, layer0.neurons, transform=np.eye(n), synapse=0)
-    nengo.Connection(input_images, layer0.neurons,
-                     transform=W.T, synapse=pstc)
+    # W, b = weights[0], biases[0]
+    # n = b.size
+    # layer0 = nengo.Ensemble(n, 1, label='layer 0', neuron_type=neuron_type,
+    #                         max_rates=max_rate*np.ones(n),
+    #                         intercepts=intercept*np.ones(n))
+    # bias = nengo.Node(output=b, label='bias 0')
+    # nengo.Connection(bias, layer0.neurons, transform=np.eye(n), synapse=0)
+    # nengo.Connection(input_images, layer0.neurons,
+    #                  transform=W.T, synapse=pstc)
 
-    layers = [layer0]
+    # layers = [layer0]
 
     # --- make sigmoidal layers
-    # layers = []
-    # for i, [W, b] in enumerate(zip(weights[:-1], biases[:-1])):
-    #     n = b.size
-    #     layer = nengo.Ensemble(n, 1, label='layer %d' % i, neuron_type=neuron_type,
-    #                            max_rates=max_rate*np.ones(n),
-    #                            intercepts=intercept*np.ones(n))
-    #     # layer.gain = alpha * np.ones(b.size)
-    #     # layer.bias = beta * np.ones(b.size)
-    #     bias = nengo.Node(output=b)
-    #     nengo.Connection(bias, layer.neurons, synapse=0)
+    layers = []
+    for i, [W, b] in enumerate(zip(weights[:-1], biases[:-1])):
+        n = b.size
+        layer = nengo.Ensemble(n, 1, label='layer %d' % i, neuron_type=neuron_type,
+                               max_rates=max_rate*np.ones(n),
+                               intercepts=intercept*np.ones(n))
+        bias = nengo.Node(output=b)
+        nengo.Connection(bias, layer.neurons, transform=np.eye(n), synapse=0)
 
-    #     if i == 0:
-    #         print "here"
-    #         nengo.Connection(my_input_aaa, layer.neurons,
-    #                          transform=W.T, synapse=pstc)
-    #     else:
-    #         print "there"
-    #         nengo.Connection(layers[-1].neurons, layer.neurons,
-    #                          transform=W.T * amp, synapse=pstc)
+        if i == 0:
+            nengo.Connection(input_images, layer.neurons,
+                             transform=W.T, synapse=pstc)
+        else:
+            nengo.Connection(layers[-1].neurons, layer.neurons,
+                             transform=W.T * amp, synapse=pstc)
 
-    #     layers.append(layer)
+        layers.append(layer)
 
     # --- make code layer
     W, b = weights[-1], biases[-1]
-    code_layer = nengo.networks.EnsembleArray(50, b.size, label='code', radius=10)
+    code_layer = nengo.networks.EnsembleArray(50, b.size, label='code', radius=15)
     code_bias = nengo.Node(output=b)
     nengo.Connection(code_bias, code_layer.input, synapse=0)
     nengo.Connection(layers[-1].neurons, code_layer.input,
                      transform=W.T * amp * 1000, synapse=pstc)
 
     # --- make cleanup
-    class_layer = nengo.networks.EnsembleArray(100, 10, label='class', radius=30)
+    class_layer = nengo.networks.EnsembleArray(100, 10, label='class', radius=15)
     class_bias = nengo.Node(output=bc)
     nengo.Connection(class_bias, class_layer.input, synapse=0)
     nengo.Connection(code_layer.output, class_layer.input,
@@ -137,7 +133,7 @@ with model:
 
     probe_code = nengo.Probe(code_layer.output, synapse=0.03)
     probe_class = nengo.Probe(class_layer.output, synapse=0.03)
-    probe_test = nengo.Probe(test)
+    probe_test = nengo.Probe(test, synapse=0.01)
 
 
 # --- simulation
@@ -164,10 +160,14 @@ def plot_bars():
     for x in np.arange(0, t[-1], presentation_time):
         plt.plot([x, x], ylim, 'k--')
 
-images = test_images[:int(t[-1]/presentation_time) + 1]
+inds = slice(0, int(t[-1]/presentation_time) + 1)
+images = test_images[inds]
+labels = test_labels[inds]
 allimage = np.zeros((28, 28 * len(images)), dtype=images.dtype)
 for i, image in enumerate(images):
     allimage[:, i * 28:(i + 1) * 28] = image.reshape(28, 28)
+
+z2 = np.argmax(y, axis=1) == labels.repeat(100)
 
 plt.figure(1)
 plt.clf()
@@ -199,5 +199,9 @@ plt.ylabel('correct')
 
 # --- compute error rate
 zblocks = z.reshape(-1, 100)[:, 50:]  # 50 ms blocks at end of each 100
-errors = np.mean(zblocks, axis=1) < 0.1
+errors = np.mean(zblocks, axis=1) < 0.5
+print errors.mean()
+
+zblocks = z2.reshape(-1, 100)[:, 80:]  # 20 ms blocks at end of each 100
+errors = np.mean(zblocks, axis=1) < 0.5
 print errors.mean()

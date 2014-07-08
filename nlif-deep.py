@@ -12,12 +12,13 @@ import numpy as np
 import matplotlib.pyplot as plt
 import scipy.optimize
 
-os.environ['THEANO_FLAGS'] = 'device=gpu, floatX=float32'
+# os.environ['THEANO_FLAGS'] = 'device=gpu, floatX=float32'
 # os.environ['THEANO_FLAGS'] = 'mode=DEBUG_MODE'
 import theano
 import theano.tensor as tt
 import theano.sandbox.rng_mrg
 
+from hinge import multi_hinge_margin
 import plotting
 
 from hunse_tools import tic, toc
@@ -336,9 +337,6 @@ class DeepAutoencoder(object):
 
         # compute coding error
         y = self.propup(xn)
-        # z = y
-        # for auto in self.autos[::-1]:
-        #     z = auto.propdown(z, V=auto.V)
         z = self.propdown(y)
         rmses = tt.sqrt(tt.mean((x - z)**2, axis=1))
         error = tt.mean(rmses)
@@ -382,8 +380,7 @@ class DeepAutoencoder(object):
             plotting.filters(self.autos[0].filters, rows=10, cols=20)
             plt.draw()
 
-    def train_classifier(self, train, test):
-
+    def train_classifier(self, train, test, n_epochs=30):
         dtype = theano.config.floatX
 
         # --- find codes
@@ -407,14 +404,19 @@ class DeepAutoencoder(object):
         split_p = lambda p: [p[:-n_labels].reshape(Wshape), p[-n_labels:]]
         form_p = lambda params: np.hstack([p.flatten() for p in params])
 
-        # compute negative log likelihood
-        p_y_given_x = tt.nnet.softmax(tt.dot(x, W) + b)
-        y_pred = tt.argmax(p_y_given_x, axis=1)
-        nll = -tt.mean(tt.log(p_y_given_x)[tt.arange(y.shape[0]), y])
-        error = tt.mean(tt.neq(y_pred, y))
+        # # compute negative log likelihood
+        # p_y_given_x = tt.nnet.softmax(tt.dot(x, W) + b)
+        # y_pred = tt.argmax(p_y_given_x, axis=1)
+        # nll = -tt.mean(tt.log(p_y_given_x)[tt.arange(y.shape[0]), y])
+        # error = tt.mean(tt.neq(y_pred, y))
+
+        # compute hinge loss
+        yc = tt.dot(x, W) + b
+        cost = multi_hinge_margin(yc, y).mean()
+        error = cost
 
         # compute gradients
-        grads = tt.grad(nll, [W, b])
+        grads = tt.grad(cost, [W, b])
         f_df = theano.function(
             [W, b], [error] + grads,
             givens={x: codes, y: labels})
@@ -428,7 +430,7 @@ class DeepAutoencoder(object):
 
         p0 = form_p([W0, b0])
         p_opt, mincost, info = scipy.optimize.lbfgsb.fmin_l_bfgs_b(
-            f_df_wrapper, p0, maxfun=100, iprint=1)
+            f_df_wrapper, p0, maxfun=n_epochs, iprint=1)
 
         self.W, self.b = split_p(p_opt)
 
@@ -448,13 +450,19 @@ class DeepAutoencoder(object):
         y = tt.ivector('labels')
 
         # compute coding error
-        p_y_given_x = tt.nnet.softmax(tt.dot(self.propup(x), W) + b)
-        y_pred = tt.argmax(p_y_given_x, axis=1)
-        nll = -tt.mean(tt.log(p_y_given_x)[tt.arange(y.shape[0]), y])
-        error = tt.mean(tt.neq(y_pred, y))
+        # p_y_given_x = tt.nnet.softmax(tt.dot(self.propup(x), W) + b)
+        # y_pred = tt.argmax(p_y_given_x, axis=1)
+        # nll = -tt.mean(tt.log(p_y_given_x)[tt.arange(y.shape[0]), y])
+        # error = tt.mean(tt.neq(y_pred, y))
+
+        # compute classification error
+        yn = self.propup(x)
+        yc = tt.dot(yn, W) + b
+        cost = multi_hinge_margin(yc, y).mean()
+        error = tt.mean(tt.neq(tt.argmax(yc, axis=1), y))
 
         # compute gradients
-        grads = tt.grad(nll, params)
+        grads = tt.grad(cost, params)
         f_df = theano.function([x, y], [error] + grads)
 
         np_params = [param.get_value() for param in params]
@@ -508,22 +516,28 @@ class DeepAutoencoder(object):
         x = tt.matrix('batch')
         y = tt.ivector('labels')
 
-        xn = x + self.theano_rng.normal(size=x.shape, std=1, dtype=dtype)
-        yn = self.propup(xn, noise=0.1)
+        xn = x
+        # xn = x + self.theano_rng.normal(size=x.shape, std=0.1, dtype=dtype)
+        yn = self.propup(xn, noise=1.0)
 
         # compute classification error
-        p_y_given_x = tt.nnet.softmax(tt.dot(yn, W) + b)
-        y_pred = tt.argmax(p_y_given_x, axis=1)
-        nll = -tt.mean(tt.log(p_y_given_x)[tt.arange(y.shape[0]), y])
-        class_error = tt.mean(tt.neq(y_pred, y))
+
+        # p_y_given_x = tt.nnet.softmax(tt.dot(yn, W) + b)
+        # y_pred = tt.argmax(p_y_given_x, axis=1)
+        # nll = -tt.mean(tt.log(p_y_given_x)[tt.arange(y.shape[0]), y])
+        # class_error = tt.mean(tt.neq(y_pred, y))
+
+        yc = tt.dot(yn, W) + b
+        class_cost = multi_hinge_margin(yc, y).mean()
+        class_error = tt.mean(tt.neq(tt.argmax(yc, axis=1), y))
 
         # compute autoencoder error
         z = self.propdown(yn)
         rmses = tt.sqrt(tt.mean((x - z)**2, axis=1))
-        auto_error = tt.mean(rmses)
+        auto_cost = tt.mean(rmses)
 
-        cost = (tt.cast(1 - tradeoff, dtype) * auto_error
-                + tt.cast(tradeoff, dtype) * nll)
+        cost = (tt.cast(1 - tradeoff, dtype) * auto_cost
+                + tt.cast(tradeoff, dtype) * class_cost)
         error = class_error
 
         # compute gradients
@@ -644,7 +658,7 @@ print "recons error", rms(test_images - recons, axis=1).mean()
 # print "recons error", rms(test_images - recons, axis=1).mean()
 
 # --- train classifier with backprop
-savename = "nlif-deep-c.npz"
+savename = "nlif-deep-hinge.npz"
 if not os.path.exists(savename):
     deep.train_classifier(train, test)
     np.savez(savename, W=deep.W, b=deep.b)
@@ -655,9 +669,9 @@ else:
 print "mean error", deep.test(test).mean()
 
 # --- train with backprop
-if 0:
+if 1:
     # deep.backprop(train, test, n_epochs=100)
-    deep.sgd(train, test, n_epochs=100)
+    deep.sgd(train, test, n_epochs=50)
     print "mean error", deep.test(test).mean()
 
 # --- try to get autoencoder back
@@ -666,7 +680,7 @@ if 0:
     print "recons error", rms(test_images - recons, axis=1).mean()
 
 if 0:
-    # Try to learn linear decoder (doesn't work too well)
+    # Try to learn linear reconstructor (doesn't work too well)
     import nengo
 
     codes = deep.encode(train_images)
@@ -691,3 +705,18 @@ if 0:
     d['Wc'] = deep.W
     d['bc'] = deep.b
     np.savez('nlif-deep.npz', **d)
+
+if 0:
+    # compute top layers mean and std
+    codes = deep.encode(train_images)
+    classes = np.dot(codes, deep.W) + deep.b
+
+    plt.figure(108)
+    plt.clf()
+    plt.subplot(211)
+    plt.hist(codes.flatten(), 100)
+    plt.subplot(212)
+    plt.hist(classes.flatten(), 100)
+
+    print "code (mean, std):", codes.mean(), codes.std()
+    print "class (mean, std):", classes.mean(), classes.std()
