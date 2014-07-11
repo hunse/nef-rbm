@@ -15,6 +15,7 @@ N = 3000
 D = 16
 
 # dc = 1.2  # rho counting distance threshold
+# dc = 0.8  # rho counting distance threshold
 dc = 0.8  # rho counting distance threshold
 
 # generate random points on unit hypersphere
@@ -44,9 +45,10 @@ planes = UniformHypersphere(surface=True).sample(D_lsh, D)
 powers = 2**np.arange(0, D_lsh)
 ipowers = 2.0**np.arange(-D_lsh, 0)
 
-tic()
+BINARY_BINS = False
 
-if 0:
+tic()
+if BINARY_BINS:
     hashcodes = np.dot(points, planes.T) > 0
 else:
     hashcodes = np.dot(points, planes.T)
@@ -62,42 +64,17 @@ else:
     hashcodes[np.abs(hashcodes) < 0.1] = 0
     hashcodes = np.sign(hashcodes)
 
-# # hashes = np.dot(hashcodes, powers) + np.dot(hashcodes, ipowers)
-# # hashes = (2.0**hashcodes * (hashcodes != 0) * powers).sum(-1)
-# hashes = (hashcodes * powers * (hashcodes > 0)).sum(-1) - (hashcodes * ipowers * (hashcodes < 0)).sum(-1)
-# print len(np.unique(hashes))
-# # hashes = 2**(hashcodes * np.arange(1, D_lsh+1))
-# i = np.argsort(hashes)
-# hashes_s = hashes[i]
-# points_s = points[i]
-# rho1 = rho[i]
-
-# switches, = (np.diff(hashes_s) > 0).nonzero()
-# switches = list(switches + 1)
-# switches.insert(0, 0)
-# switches.append(N)
-
-# i = 0
-# rho2 = np.zeros(N)
-# for i0, i1 in zip(switches[:-1], switches[1:]):
-#     assert np.all(hashes_s[i0:i1] == hashes_s[i0])
-
-#     group = points_s[i0:i1]
-#     for point in group:
-#         d = distance(point, group)
-#         rho2[i] = (d < dc).sum()
-#         i += 1
-
 unique_codes = np.unique(map(tuple, hashcodes))
 rho1 = rho
 rho2 = np.zeros(N)
 for code in unique_codes:
 
     group_inds, = (hashcodes == code).all(axis=1).nonzero()
-    # group = points[]
 
-    # m = np.abs(hashcodes - code).sum(axis=1) <= 2
-    m = (np.abs(hashcodes - code) <= 1).all(axis=1)
+    if BINARY_BINS:
+        m = np.abs(hashcodes - code).sum(axis=1) <= 2
+    else:
+        m = (np.abs(hashcodes - code) <= 1).all(axis=1)
 
     neighbourhood = points[m]
     print len(neighbourhood)
