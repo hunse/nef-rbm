@@ -15,7 +15,7 @@ plt.ion()
 import plotting
 
 import nengo
-# from nengo.utils.distributions import UniformHypersphere
+from nengo.utils.distributions import UniformHypersphere
 from nengo.utils.numpy import norm, rms
 
 def create_mask(n_hid, im_shape, rf_shape, rng=np.random):
@@ -51,22 +51,19 @@ for images in [train_images, test_images]:
 # --- set up network parameters
 n_vis = train_images.shape[1]
 n_hid = 500
+n_dim = 50  # make guess about true dimensionality (for factors)
 rng = np.random
 
-if 1:
-    rf_shape = (9, 9)
-    mask = create_mask(n_hid, (28, 28), rf_shape)
-    encoders = rng.normal(size=(n_hid, n_vis)) * mask
-
-encoders = encoders.T
-mask = mask.T
-encoders /= norm(encoders, axis=0, keepdims=True)
+encoders = UniformHypersphere(surface=True).sample(n_hid, n_dim, rng=rng).T
+decoders1 = rng.normal(scale=1./n_dim, size=(n_vis, n_dim))
+print norm(np.dot(decoders1, encoders), axis=0)
 
 neurons = nengo.LIF()
 gain, bias = neurons.gain_bias(200, -0.5)
 
 def encode(x):
-    return neurons.rates(np.dot(x, encoders), gain, bias)
+    y = np.dot(np.dot(x, decoders1), encoders)
+    return neurons.rates(y, gain, bias)
 
 # --- train the network
 n_epochs = 1
@@ -76,7 +73,7 @@ batches = train_images.reshape(-1, batch_size, train_images.shape[1])
 
 # determine initial decoders
 x = train_images[:1000]
-decoders, _ = nengo.decoders.LstsqL2()(encode(x), x)
+decoders2, _ = nengo.decoders.LstsqL2()(encode(x), x)
 
 rate = 0.001
 
@@ -84,20 +81,20 @@ for i in range(n_epochs):
     for x in batches:
 
         a = encode(x)
-        xhat = np.dot(a, decoders)
+        xhat = np.dot(a, decoders2)
         x_err = xhat - x
 
-        # update encoders
-        a_err = np.dot(x_err, encoders)
-        d_encoders = (rate / batch_size) * np.dot(x.T, a_err)
-        encoders += d_encoders
+        # update decoders 1
+        a_err = np.dot(np.dot(x_err, decoders1), encoders)
+        d_decoders1 = (rate / batch_size) * np.dot(np.dot(x, decoders1).T, a_err)
+        decoders1 += d_decoders1
 
         # update decoders
         # d_decoders = (rate / batch_size) * np.dot(a.T, x_err)
         # decoders += d_decoders
 
         x = train_images[:1000]
-        decoders, _ = nengo.decoders.LstsqL2()(encode(x), x)
+        decoders2, _ = nengo.decoders.LstsqL2()(encode(x), x)
 
         # test error
         x = test_images[:200]
