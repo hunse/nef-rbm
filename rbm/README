@@ -1,0 +1,3 @@
+This folder contains code to train a standard deep belief network in Theano
+and then run it in Nengo using multiple LIF neurons per node to approximate
+the sigmoid nonlinearity.
