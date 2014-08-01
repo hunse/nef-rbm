@@ -82,6 +82,23 @@ def join_params(param_arrays):
     return np.hstack([p.flatten() for p in param_arrays])
 
 
+def shift_images(images, shape, r=1, rng=np.random):
+    output = np.zeros_like(images)
+    N = len(images)
+    I = rng.randint(-r, r+1, N)
+    J = rng.randint(-r, r+1, N)
+
+    m, n = shape
+    output = output.reshape((N, m, n))
+    for k, image in enumerate(images):
+        i, j = I[k], J[k]
+        image = image.reshape(shape)
+        output[k, max(i,0):min(m+i,m), max(j,0):min(n+j,n)] = (
+            image[max(-i,0):min(m-i,m), max(-j,0):min(n-j,n)])
+
+    return output.reshape(N, m*n)
+
+
 class FileObject(object):
     """
     A object that can be saved to file
@@ -238,7 +255,9 @@ class Autoencoder(FileObject):
             updates[self.W] = updates[self.W] * self.mask
 
         train_dbn = theano.function([x], error, updates=updates)
-        reconstruct = deep.reconstruct if deep is not None else None
+        # reconstruct = deep.reconstruct if deep is not None else None
+        encode = deep.encode if deep is not None else None
+        decode = deep.decode if deep is not None else None
 
         # --- perform SGD
         batches = images.reshape(-1, batch_size, images.shape[1])
@@ -250,15 +269,21 @@ class Autoencoder(FileObject):
                 costs.append(train_dbn(batch))
                 self.check_params()
 
-            print "Epoch %d: %0.3f" % (epoch, np.mean(costs))
+            print "Epoch %d: %0.3f (sparsity: pop: %0.3f, life: %0.3f)" % (epoch, np.mean(costs))
 
             if deep is not None and test_images is not None:
                 # plot reconstructions on test set
                 plt.figure(2)
                 plt.clf()
-                recons = reconstruct(test_images)
-                show_recons(test_images, recons)
+                test = test_images
+                codes = encode(test)
+                recs = decode(codes)
+                # recons = reconstruct(test_images)
+                show_recons(test, recs)
                 plt.draw()
+
+                print "Test set: (error: %0.3f) (sparsity: %0.3f)" % (
+                    rms(test - recs, axis=1).mean(), (codes > 0).mean())
 
             # plot filters for first layer only
             if deep is not None and self is deep.autos[0]:
@@ -536,7 +561,7 @@ class DeepAutoencoder(object):
 
         self.W, self.b = split_p(p_opt)
 
-    def backprop(self, train_set, test_set, noise=0, n_epochs=30):
+    def backprop(self, train_set, test_set, noise=0, shift=False, n_epochs=30):
         dtype = theano.config.floatX
 
         params = []
@@ -570,12 +595,15 @@ class DeepAutoencoder(object):
         np_params = [param.get_value() for param in params]
 
         # --- run L_BFGS
-        images, labels = train_set
-        labels = labels.astype('int32')
+        train_images, train_labels = train_set
+        train_labels = train_labels.astype('int32')
 
         def f_df_wrapper(p):
             for param, value in zip(params, split_params(p, np_params)):
                 param.set_value(value.astype(param.dtype))
+
+            images = shift_images(train_images, (28, 28)) if shift else train_images
+            labels = train_labels
 
             outs = f_df(images, labels)
             cost, grads = outs[0], outs[1:]
@@ -590,7 +618,7 @@ class DeepAutoencoder(object):
             param.set_value(value.astype(param.dtype), borrow=False)
 
     def sgd(self, train_set, test_set,
-            rate=0.1, noise=0, tradeoff=0.5, n_epochs=30, batch_size=100):
+            rate=0.1, noise=0, shift=False, tradeoff=0.5, n_epochs=30, batch_size=100):
         """Use SGD to do combined autoencoder and classifier training"""
         dtype = theano.config.floatX
         assert tradeoff >= 0 and tradeoff <= 1
@@ -647,14 +675,21 @@ class DeepAutoencoder(object):
         reconstruct = self.reconstruct
 
         # --- perform SGD
-        images, labels = train_set
-        ibatches = images.reshape(-1, batch_size, images.shape[1])
-        lbatches = labels.reshape(-1, batch_size).astype('int32')
-        assert np.isfinite(ibatches).all()
+        # images, labels = train_set
+        # ibatches = images.reshape(-1, batch_size, images.shape[1])
+        # lbatches = labels.reshape(-1, batch_size).astype('int32')
+        # assert np.isfinite(ibatches).all()
 
+        train_images, train_labels = train_set
+        train_labels = train_labels.astype('int32')
         test_images, test_labels = test_set
 
         for epoch in range(n_epochs):
+            images = shift_images(train_images, (28, 28)) if shift else train_images
+            labels = train_labels
+            ibatches = images.reshape(-1, batch_size, images.shape[1])
+            lbatches = labels.reshape(-1, batch_size)
+
             costs = []
             for batch, label in zip(ibatches, lbatches):
                 costs.append(train_dbn(batch, label))
@@ -720,5 +755,25 @@ def test_autoencoder():
     plt.show()
 
 
+def test_shift_images():
+    # n = 5
+    # images = np.zeros((n, 9))
+    # shape = (3, 3)
+    # images[np.arange(n), 4] = 1
+
+    # images2 = shift_images(images, shape)
+
+    # for image in images2:
+    #     print image.reshape(shape)
+
+    # --- timing test
+    from hunse_tools.timing import tic, toc
+    [train_images, _], _, _ = mnist()
+
+    tic()
+    images2 = shift_images(train_images, (28, 28))
+    toc()
+
 if __name__ == '__main__':
-    test_autoencoder()
+    # test_autoencoder()
+    test_shift_images()

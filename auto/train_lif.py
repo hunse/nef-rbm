@@ -47,26 +47,23 @@ for images in [train_images, valid_images, test_images]:
     images /= np.maximum(images.std(axis=0, keepdims=True), 3e-1)
 
 # --- pretrain with SGD backprop
-# shapes = [(28, 28), 200, 50]
-# linear = [True, False, True]
-# rf_shapes = [(9, 9), None]
-# rates = [1., 0.3]
-shapes = [(28, 28), 500, 200, 50]
-funcs = [None, nlif, nlif, None]
-rf_shapes = [(9, 9), None, None]
-rates = [1., 1., 0.3]
+shapes = [(28, 28), 500, 200]
+funcs = [None, nlif, nlif]
+rf_shapes = [(9, 9), None]
+rates = [1., 1.]
+
 n_layers = len(shapes) - 1
 assert len(funcs) == len(shapes)
 assert len(rf_shapes) == n_layers
 assert len(rates) == n_layers
 
-n_epochs = 5
+n_epochs = 15
 batch_size = 100
 
 deep = DeepAutoencoder()
 data = train_images
 for i in range(n_layers):
-    savename = "auto-%d.npz" % i
+    savename = "lif-auto-%d.npz" % i
     if not os.path.exists(savename):
         auto = Autoencoder(
             shapes[i], shapes[i+1], rf_shape=rf_shapes[i],
@@ -93,7 +90,7 @@ print "recons error", rms(test_images - recons, axis=1).mean()
 # print "recons error", rms(test_images - recons, axis=1).mean()
 
 # --- train classifier with backprop
-savename = "classifier-hinge.npz"
+savename = "lif-classifier-hinge.npz"
 if not os.path.exists(savename):
     deep.train_classifier(train, test)
     np.savez(savename, W=deep.W, b=deep.b)
@@ -108,8 +105,10 @@ if 1:
     # deep.backprop(train, test, n_epochs=100)
     # deep.sgd(train, test, n_epochs=50)
 
-    deep.sgd(train, test, n_epochs=5, noise=0.5)
-    deep.backprop(train, test, n_epochs=50, noise=0.5)
+    # deep.sgd(train, test, n_epochs=5, noise=0.5, shift=True)
+    # deep.backprop(train, test, n_epochs=50, noise=0.5, shift=True)
+
+    deep.sgd(train, test, n_epochs=50, tradeoff=1, noise=0.3, shift=True)
     print "mean error", deep.test(test).mean()
 
 # --- try to get autoencoder back
@@ -142,7 +141,7 @@ if 0:
         d['rec_biases'] = [auto.b.get_value() for auto in deep.autos]
     d['Wc'] = deep.W
     d['bc'] = deep.b
-    np.savez('nlif-deep.npz', **d)
+    np.savez('lif-126-error.npz', **d)
 
 if 0:
     # compute top layers mean and std
