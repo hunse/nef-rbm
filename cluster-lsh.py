@@ -1,4 +1,9 @@
+"""
+Playing with the clustering method proposed in
 
+    Alex Rodriguez, Alessandro Laio. Clustering by fast search and find of
+        density peaks. Science, June 2014, vol. 344 no. 6191 pp. 1492-1496.
+"""
 import itertools
 
 import numpy as np
