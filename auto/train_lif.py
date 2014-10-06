@@ -13,14 +13,16 @@ import theano.tensor as tt
 
 import plotting
 
+import mnist
 import autoencoder
 reload(autoencoder)
-from autoencoder import (rms, mnist, show_recons,
+from autoencoder import (rms, show_recons,
                          FileObject, Autoencoder, DeepAutoencoder)
 
-plt.ion()
+SPAUN = True
+results_dir = 'results-spaun' if SPAUN else 'results-lif'
 
-results_dir = 'results'
+plt.ion()
 
 def nlif(x):
     dtype = theano.config.floatX
@@ -38,7 +40,8 @@ def nlif(x):
 
 
 # --- load the data
-train, valid, test = mnist()
+# train, valid, test = mnist.load()
+train, valid, test = mnist.augment() if SPAUN else mnist.load()
 train_images, _ = train
 valid_images, _ = valid
 test_images, _ = test
@@ -52,6 +55,7 @@ shapes = [(28, 28), 500, 200]
 funcs = [None, nlif, nlif]
 rf_shapes = [(9, 9), None]
 rates = [1., 1.]
+# rates = [0.05, 0.05]
 
 n_layers = len(shapes) - 1
 assert len(funcs) == len(shapes)

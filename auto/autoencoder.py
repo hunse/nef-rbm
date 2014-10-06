@@ -24,28 +24,6 @@ def rms(x, **kwargs):
     return np.sqrt((x**2).mean(**kwargs))
 
 
-def mnist(filename='mnist.pkl.gz'):
-    import gzip
-    import os
-    import cPickle as pickle
-    import urllib
-
-    if not os.path.exists(filename):
-        url = 'http://deeplearning.net/data/mnist/mnist.pkl.gz'
-        urllib.urlretrieve(url, filename=filename)
-
-    with gzip.open(filename, 'rb') as f:
-        train, valid, test = pickle.load(f)
-
-    return train, valid, test
-
-
-def normalize(images):
-    """Normalize a set of images"""
-    images -= images.mean(axis=0, keepdims=True)
-    images /= np.maximum(images.std(axis=0, keepdims=True), 3e-1)
-
-
 def show_recons(x, z):
     plotting.compare([x.reshape(-1, 28, 28), z.reshape(-1, 28, 28)],
                      rows=5, cols=20, vlims=(-1, 2))
@@ -513,6 +491,7 @@ class DeepAutoencoder(object):
         # --- find codes
         images, labels = train
         n_labels = len(np.unique(labels))
+        print("Train classifier: n_labels=%s" % n_labels)
         codes = self.encode(images.astype(dtype))
 
         codes = theano.shared(codes.astype(dtype), name='codes')

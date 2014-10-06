@@ -11,9 +11,7 @@ import nengo
 
 # --- parameters
 presentation_time = 0.1
-Ncode = 10
-# Nclass = 30
-Nclass = 50
+neurons_per_class = 10  # neurons per class in classifier
 # pstc = 0.006
 pstc = 0.005
 
@@ -37,20 +35,20 @@ def test_classifier(t, dots):
     return test_labels[get_index(t)] == labels[np.argmax(dots)]
 
 # --- load the RBM data
-# data = np.load('nlif-deep-orig.npz')
-# data = np.load('lif-500-200-10.npz')
 # data = np.load('lif-126-error.npz')
-data = np.load('results/params.npz')
+data = np.load('results-spaun/params.npz')
 weights = data['weights']
 biases = data['biases']
 Wc = data['Wc']
 bc = data['bc']
+n_classifier = bc.size
 
 print [len(b) for b in biases] + [len(bc)]
 
 # --- load the testing data
-from autoencoder import mnist
-_, _, [test_images, test_labels] = mnist()
+import mnist
+# _, _, [test_images, test_labels] = mnist.load()
+_, _, [test_images, test_labels] = mnist.augment()
 
 for images in [test_images]:
     images -= images.mean(axis=0, keepdims=True)
@@ -65,6 +63,7 @@ n_test = len(test_images)
 
 labels = np.unique(test_labels)
 n_labels = labels.size
+assert n_labels == n_classifier
 
 # --- test as ANN
 codes, layers = forward(test_images, weights, biases)
@@ -102,7 +101,7 @@ neuron_type = nengo.LIF(tau_rc=0.02, tau_ref=0.002)
 max_rate = 63.04
 intercept = 0
 amp = 1. / max_rate
-assert np.allclose(neuron_type.gain_bias(max_rate, intercept), (1, 1), atol=1e-2)
+assert np.allclose(neuron_type.gain_bias([max_rate], [intercept]), (1, 1), atol=1e-2)
 
 model = nengo.Network(seed=97)
 with model:
@@ -128,13 +127,14 @@ with model:
         layers.append(layer)
 
     # --- make cleanup
-    class_layer = nengo.networks.EnsembleArray(Nclass, 10, label='class', radius=5)
+    class_layer = nengo.networks.EnsembleArray(
+        neurons_per_class, n_classifier, label='class', radius=5)
     class_bias = nengo.Node(output=bc)
     nengo.Connection(class_bias, class_layer.input, synapse=0)
     nengo.Connection(layers[-1].neurons, class_layer.input,
                      transform=Wc.T * amp, synapse=pstc)
 
-    test = nengo.Node(output=test_classifier, size_in=n_labels)
+    test = nengo.Node(output=test_classifier, size_in=n_classifier)
     nengo.Connection(class_layer.output, test)
 
     # --- make centroid classifier node
@@ -166,9 +166,10 @@ with model:
 
 # --- simulation
 sim = nengo.Simulator(model)
-sim.run(1000., progress_bar=None)
+# sim.run(1000., progress_bar=None)
 # sim.run(100.)
 # sim.run(10.)
+sim.run(5.)
 # sim.run(1.)
 
 t = sim.trange()

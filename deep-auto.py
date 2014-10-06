@@ -33,6 +33,59 @@ def norm(x, **kwargs):
     return np.sqrt((x**2).sum(**kwargs))
 
 
+# def sgd(f_update, batches_x, batches_y, n_epochs):
+#     for epoch in range(n_epochs):
+#         costs = []
+#         for batch in batches:
+#             costs.append(train_dbn(batch))
+
+#         print "Epoch %d: %0.3f" % (epoch, np.mean(costs))
+
+#         # if test_images is not None:
+#         #     # plot reconstructions on test set
+#         #     plt.figure(2)
+#         #     plt.clf()
+#         #     recons = reconstruct(test_images)
+#         #     show_recons(test_images, recons)
+#         #     plt.draw()
+
+#         # # plot filters for first layer only
+#         # plt.figure(3)
+#         # plt.clf()
+#         # plotting.filters(self.autos[0].filters, rows=10, cols=20)
+#         # plt.draw()
+
+
+def lbfgs(f_df, params, np_params, dtype=None, **kwargs):
+    import scipy.optimize
+    dtype = theano.config.floatX if dtype is None else dtype
+
+    def split_p(p):
+        split = []
+        i = 0
+        for pp in np_params:
+            split.append(p[i:i + pp.size].reshape(pp.shape))
+            i += pp.size
+        return split
+
+    form_p = lambda params: np.hstack([p.flatten() for p in params])
+
+    # --- begin backprop
+    def f_df_wrapper(p):
+        for param, value in zip(params, split_p(p)):
+            param.set_value(value.astype(param.dtype))
+
+        outs = f_df()
+        cost, grad = outs[0], form_p(outs[1:])
+        return cost.astype('float64'), grad.astype('float64')
+
+    p0 = form_p(np_params)
+    p_opt, mincost, info = scipy.optimize.lbfgsb.fmin_l_bfgs_b(
+        f_df_wrapper, p0, **kwargs)
+
+    return split_p(p_opt)
+
+
 class RBM(object):
 
     # --- define RBM parameters
@@ -295,21 +348,21 @@ class RBM(object):
 
 class DBN(object):
 
-    def __init__(self, rbms=None):
-        self.rbms = rbms if rbms is not None else []
-        # self.W = None  # classifier weights
-        # self.b = None  # classifier biases
+    def __init__(self, layers=None):
+        self.layers = layers if layers is not None else []
+        self.W = None  # classifier weights
+        self.b = None  # classifier biases
 
     def propup(self, images):
         codes = images
-        for rbm in self.rbms:
-            codes = rbm.propup(codes)
+        for layer in self.layers:
+            codes = layer.propup(codes)
         return codes
 
     def propdown(self, codes):
         images = codes
-        for rbm in self.rbms[::-1]:
-            images = rbm.propdown(images)
+        for layer in self.layers[::-1]:
+            images = layer.propdown(images)
         return images
 
     @property
@@ -334,8 +387,8 @@ class DBN(object):
         dtype = theano.config.floatX
 
         params = []
-        for rbm in self.rbms:
-            params.extend([rbm.encoders, rbm.bias, rbm.decoders])
+        for layer in self.layers:
+            params.extend([layer.encoders, layer.bias, layer.decoders])
 
         # --- compute backprop function
         x = tt.matrix('images')
@@ -367,8 +420,8 @@ class DBN(object):
     #     dtype = theano.config.floatX
 
     #     params = []
-    #     for rbm in self.rbms:
-    #         params.extend([rbm.encoders, rbm.decoders])
+    #     for layer in self.layers:
+    #         params.extend([layer.encoders, layer.decoders])
 
     #     # --- compute backprop function
     #     x = theano.shared(images.astype(dtype), name='images')
@@ -416,6 +469,121 @@ class DBN(object):
         rmses = np.sqrt(np.mean((images - recons)**2, axis=1))
         return rmses
 
+    def train_classifier(self, train, algo='sgd', n_epochs=None):
+        from hinge import multi_hinge_margin
+
+        dtype = theano.config.floatX
+
+        # --- find codes
+        images, labels = train
+        codes = self.encode(images.astype(dtype))
+        n_features = codes.shape[1]
+        n_labels = len(np.unique(labels))
+
+        # --- compute backprop function
+        Wshape = (n_features, n_labels)
+        x = tt.matrix('x', dtype=dtype)
+        y = tt.ivector('y')
+        # W = tt.matrix('W', dtype=dtype)
+        # b = tt.vector('b', dtype=dtype)
+
+        if self.W is None:
+            self.W = np.random.normal(size=Wshape).astype(dtype) / 10
+        if self.b is None:
+            self.b = np.zeros(n_labels)
+
+        np_params = [self.W, self.b]
+        W = theano.shared(self.W, name='W')
+        b = theano.shared(self.b, name='b')
+
+        # dropout
+        theano_rng = theano.sandbox.rng_mrg.MRG_RandomStreams(seed=7)
+        keep = tt.gt(theano_rng.uniform(x.shape), 0.5)
+        xn = tt.where(keep, x, 0)
+
+        # # compute negative log likelihood
+        # p_y_given_x = tt.nnet.softmax(tt.dot(x, W) + b)
+        # y_pred = tt.argmax(p_y_given_x, axis=1)
+        # nll = -tt.mean(tt.log(p_y_given_x)[tt.arange(y.shape[0]), y])
+        # error = tt.mean(tt.neq(y_pred, y))
+
+        # compute hinge loss
+        yc = tt.dot(xn, W) + b
+        cost = multi_hinge_margin(yc, y).mean()
+        error = cost
+
+        # compute gradients
+        params = [W, b]
+        grads = tt.grad(cost, [W, b])
+
+        if algo == 'sgd':
+            n_epochs = n_epochs or 30
+            rate = 0.1
+            # rate = tt.cast(0.01, dtype=dtype)
+            # rate = tt.cast(0.1, dtype=dtype)
+
+            updates = [(p, p - tt.cast(rate, dtype=dtype) * g)
+                       for p, g in zip(params, grads)]
+            train_dbn = theano.function([x, y], error, updates=updates)
+
+            batch_size = 100
+            batches_x = codes.reshape(-1, batch_size, codes.shape[1])
+            batches_y = labels.reshape(-1, batch_size).astype('int32')
+            assert np.isfinite(batches_x).all()
+
+            costs = []
+            rate_counter = 0
+            for epoch in range(n_epochs):
+                icosts = []
+                for x, y in zip(batches_x, batches_y):
+                    icosts.append(train_dbn(x, y))
+
+                costs.append(np.mean(icosts))
+
+                if len(costs) < 2:
+                    print "Epoch %d: %0.3f" % (epoch, costs[-1])
+                else:
+                    cost_ratio = costs[-1] / costs[-2]
+                    print "Epoch %d (%0.1e): %0.3f (%0.3f)" % (epoch, rate, costs[-1], cost_ratio)
+
+                    if cost_ratio > 0.99:
+                        rate_counter += 1
+                    if rate_counter >= 3:
+                        rate /= 2
+                        rate_counter = 0
+
+                self.W, self.b = [p.get_value(borrow=False) for p in params]
+
+
+        elif algo == 'lbfgs':
+            n_epochs = n_epochs or 1000
+
+            codes = theano.shared(codes.astype(dtype), name='codes')
+            labels = tt.cast(theano.shared(labels.astype(dtype), name='labels'), 'int32')
+
+            f_df = theano.function([], [error] + grads,
+                                   givens={x: codes, y:labels})
+
+            self.W, self.b = lbfgs(
+                f_df, params, np_params, dtype=dtype, maxfun=n_epochs, iprint=1)
+        else:
+            raise NotImplementedError("Unrecognized algorithm: '%s'" % algo)
+
+    def test_classifier(self, test_set, dropout=False):
+        assert self.W is not None and self.b is not None
+
+        images, labels = test_set
+        codes = self.encode(images)
+
+        if dropout:
+            dropout = dropout if isinstance(dropout, float) else 0.5
+            keep = np.random.uniform(size=codes.shape) > dropout
+            codes[~keep] = 0
+
+        categories = np.unique(labels)
+        inds = np.argmax(np.dot(codes, self.W) + self.b, axis=1)
+        return (labels != categories[inds])
+
 
 # --- load the data
 filename = 'mnist.pkl.gz'
@@ -435,9 +603,12 @@ for images in [train_images, valid_images, test_images]:
     images[:] = 2 * images - 1
 
 # --- pretrain with CD
-shapes = [(28, 28), 500, 200, 50]
+# shapes = [(28, 28), 500, 200, 50]
+# rf_shapes = [(9, 9), None, None]
+shapes = [(28, 28), 5000]
+rf_shapes = [(9, 9)]
+
 n_layers = len(shapes) - 1
-rf_shapes = [(9, 9), None, None]
 assert len(rf_shapes) == n_layers
 
 dbn = DBN()
@@ -446,7 +617,6 @@ data = train_images[:10000]
 valid_images = valid_images[:1000]
 for i in range(n_layers):
 
-
     rbm = RBM(shapes[i], shapes[i+1], rf_shape=rf_shapes[i])
     rbm.statistical_encoders(data)
     rbm.pretrain(data)
@@ -454,7 +624,7 @@ for i in range(n_layers):
 
     data = rbm.encode(data)
 
-    dbn.rbms.append(rbm)
+    dbn.layers.append(rbm)
     rmses = dbn.test_reconstruction(valid_images)
     print "RBM %d error: %0.3f (%0.3f)" % (i, rmses.mean(), rmses.std())
 
@@ -468,12 +638,28 @@ plotting.compare(
 plt.show()
 # plt.savefig('nef.png')
 
-dbn.backprop(train_images[:10000], n_epochs=10)
+if 0:
+    dbn.backprop(train_images[:10000], n_epochs=10)
 
-plt.figure(199)
-plt.clf()
-recons = dbn.reconstruct(test_images)
-plotting.compare(
-    [test_images.reshape(-1, 28, 28), recons.reshape(-1, 28, 28)],
-    rows=5, cols=20, vlims=(-1, 1))
-plt.show()
+    plt.figure(199)
+    plt.clf()
+    recons = dbn.reconstruct(test_images)
+    plotting.compare(
+        [test_images.reshape(-1, 28, 28), recons.reshape(-1, 28, 28)],
+        rows=5, cols=20, vlims=(-1, 1))
+    plt.show()
+
+if 1:
+    # train classifier
+    dbn.train_classifier(train, algo='sgd', n_epochs=300)
+    # dbn.train_classifier(train, algo='lbfgs', n_epochs=100)
+    errors = dbn.test_classifier(test)
+    print errors.mean()
+
+if 0:
+    # train reference
+    dbn_ref = DBN()
+    dbn_ref.train_classifier(train, algo='sgd', n_epochs=100)
+    dbn_ref.train_classifier(train, algo='lbfgs', n_epochs=100)
+    errors = dbn_ref.test_classifier(test)
+    print errors.mean()
