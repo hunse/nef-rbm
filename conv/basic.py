@@ -119,9 +119,78 @@ def ConvLarge_gettrain(batchsize):
     return train
 
 
+def ConvLayers_gettrain(batchsize, testsize, chan, n_layers=1):
+    from theano import shared, function, config
+    from theano.tensor import lscalar, tanh, dot, grad, log, arange
+    from theano.tensor.nnet import softmax
+    from theano.tensor.nnet.conv import conv2d
+    from theano.tensor.signal.downsample import max_pool_2d
 
-# [train_images, train_labels], [test_images, test_labels] = get_cifar10()
-[train_images, train_labels], [test_images, test_labels] = get_mnist()
+    sx = tt.tensor4()
+    sy = tt.ivector()
+
+    rng = np.random
+    outputs = 10
+    lr = 5e-2
+
+    pool_size2 = lambda x: int(np.ceil(x / 2.))
+    r0 = 32
+    n0 = 6
+    r1 = pool_size2(r0 - (7 - 1))
+    n1 = 16
+    r2 = pool_size2(r1 - (7 - 1))
+    nv = r1**2 * n0 if n_layers == 1 else r2**2 * n1
+
+    w0 = shared(rng.randn(n0, chan, 7, 7).astype(dtype) * np.sqrt(6. / 25))
+    b0 = shared(np.zeros(n0, dtype=dtype))
+    v = shared(rng.normal(scale=0.1, size=(nv, outputs)).astype(dtype))
+    c = shared(np.zeros(outputs, dtype=dtype))
+    params = [w0, b0, v, c]
+
+    if n_layers >= 2:
+        w1 = shared(rng.randn(n1, n0, 7, 7).astype(dtype) * np.sqrt(6. / 25))
+        b1 = shared(np.zeros(n1, dtype=dtype))
+        params.extend((w1, b1))
+
+    def propup(size):
+        c0 = conv2d(sx, w0, image_shape=(size, chan, r0, r0),
+                    filter_shape=(6, chan, 7, 7))
+        t0 = tanh(c0 + b0.dimshuffle(0, 'x', 'x'))
+        s0 = tanh(max_pool_2d(t0, (2, 2)))
+        y = s0
+
+        if n_layers >= 2:
+            c1 = conv2d(s0, w1, image_shape=(size, chan, r1, r1),
+                        filter_shape=(6, chan, 7, 7))
+            t1 = tanh(c1 + b1.dimshuffle(0, 'x', 'x'))
+            s1 = tanh(max_pool_2d(t1, (2, 2)))
+            y = s1
+
+        return dot(y.flatten(2), v) + c
+
+    p_y_given_x = softmax(propup(batchsize))
+    nll = -log(p_y_given_x)[arange(sy.shape[0]), sy]
+    cost = nll.mean()
+    error = tt.neq(tt.argmax(p_y_given_x, axis=1), sy).mean()
+
+    gparams = grad(cost, params)
+
+    train = function([sx, sy], [cost, error],
+            updates=[(p, p - lr * gp) for p, gp in zip(params, gparams)])
+
+    # --- make test function
+    y_pred = tt.argmax(propup(testsize), axis=1)
+    error = tt.mean(tt.neq(y_pred, sy))
+    test = function([sx, sy], error)
+
+    return train, test
+
+
+if 0:
+    [train_images, train_labels], [test_images, test_labels] = get_cifar10()
+else:
+    [train_images, train_labels], [test_images, test_labels] = get_mnist()
+chan = train_images.shape[1]
 
 if 0:
     def show(image, ax=None):
@@ -141,19 +210,27 @@ batch_size = 100
 batches = train_images.reshape(-1, batch_size, *train_images.shape[1:])
 batch_labels = train_labels.reshape(-1, batch_size)
 
-train = ConvLarge_gettrain(batch_size)
+test_size = 1000
+test_batches = test_images.reshape(-1, test_size, *test_images.shape[1:])
+test_batch_labels = test_labels.reshape(-1, test_size)
 
-n_epochs = 3
+# train, test = ConvLayers_gettrain(batch_size, test_size, n_layers=1)
+train, test = ConvLayers_gettrain(batch_size, test_size, chan, n_layers=2)
+
+n_epochs = 100
 
 
 for epoch in range(n_epochs):
-    cost = 0
+    cost = 0.0
+    error = 0.0
     for x, y in zip(batches, batch_labels):
-        costi = train(x, y)
-        # print costi
+        costi, errori = train(x, y)
         cost += costi
+        error += errori
+    error /= batches.shape[0]
 
-    print cost
-    # print cost / float(train_images.shape[0])
+    test_error = test(test_batches[0], test_batch_labels[0])
+    print "Epoch %d: %f, %f, %f" % (epoch, cost, error, test_error)
 
-    # eval_and_report(train, "ConvLarge", [batchsize], N=120)
+error = np.mean([test(x, y) for x, y in zip(test_batches, test_batch_labels)])
+print "Test error: %f" % error
