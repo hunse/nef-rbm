@@ -1,3 +1,6 @@
+"""Training a single convolutional layer on the MNIST dataset.
+"""
+
 import os
 import warnings
 
@@ -8,32 +11,6 @@ import theano
 import theano.tensor as tt
 
 dtype = theano.config.floatX
-
-
-def get_cifar10():
-    from skdata.cifar10.dataset import CIFAR10
-    warnings.filterwarnings("ignore", category=DeprecationWarning)
-
-    data = CIFAR10()
-    data.meta
-
-    test_mask = np.array([m['split'] == 'test' for m in data.meta])
-    train_images = data._pixels[~test_mask]
-    train_labels = data._labels[~test_mask]
-    test_images = data._pixels[test_mask]
-    test_labels = data._labels[test_mask]
-
-    def process(images):
-        # scale
-        images = images.astype(dtype) / 255.
-
-        # roll channel dimension before shape dimensions
-        images = np.rollaxis(images, -1, 1)
-
-        return images
-
-    train_images, test_images = process(train_images), process(test_images)
-    return (train_images, train_labels), (test_images, test_labels)
 
 
 def get_mnist():
@@ -141,10 +118,7 @@ def get_train(batchsize, testsize, chan, filters=[6], pooling=[2], alpha=5e-2):
     return train, test
 
 
-if 1:
-    [train_images, train_labels], [test_images, test_labels] = get_cifar10()
-else:
-    [train_images, train_labels], [test_images, test_labels] = get_mnist()
+[train_images, train_labels], [test_images, test_labels] = get_mnist()
 chan = train_images.shape[1]
 
 if 0:
@@ -170,12 +144,8 @@ test_batches = test_images.reshape(-1, test_size, *test_images.shape[1:])
 test_batch_labels = test_labels.reshape(-1, test_size)
 
 # --- mnist
-# train, test = get_train(batch_size, test_size, chan, filters=[10], pooling=[3])
+train, test = get_train(batch_size, test_size, chan, filters=[10], pooling=[3])
 # train, test = get_train(batch_size, test_size, chan, filters=[6, 16], pooling=[2, 2], alpha=0.01)
-
-# --- cifar
-# train, test = get_train(batch_size, test_size, chan, filters=[32], pooling=[3])
-train, test = get_train(batch_size, test_size, chan, filters=[32, 32], pooling=[3, 3], alpha=0.01)
 
 n_epochs = 50
 for epoch in range(n_epochs):
