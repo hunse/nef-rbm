@@ -20,10 +20,11 @@ from autoencoder import (rms, mnist, show_recons,
 
 plt.ion()
 
+results_dir = 'results'
 
 def nlif(x):
     dtype = theano.config.floatX
-    sigma = tt.cast(0.05, dtype=dtype)
+    sigma = tt.cast(0.01, dtype=dtype)
     tau_ref = tt.cast(0.002, dtype=dtype)
     tau_rc = tt.cast(0.02, dtype=dtype)
     alpha = tt.cast(1, dtype=dtype)
@@ -63,7 +64,7 @@ batch_size = 100
 deep = DeepAutoencoder()
 data = train_images
 for i in range(n_layers):
-    savename = "lif-auto-%d.npz" % i
+    savename = results_dir + "/lif-auto-%d.npz" % i
     if not os.path.exists(savename):
         auto = Autoencoder(
             shapes[i], shapes[i+1], rf_shape=rf_shapes[i],
@@ -90,7 +91,7 @@ print "recons error", rms(test_images - recons, axis=1).mean()
 # print "recons error", rms(test_images - recons, axis=1).mean()
 
 # --- train classifier with backprop
-savename = "lif-classifier-hinge.npz"
+savename = results_dir + "/classifier-hinge.npz"
 if not os.path.exists(savename):
     deep.train_classifier(train, test)
     np.savez(savename, W=deep.W, b=deep.b)
@@ -131,7 +132,7 @@ if 0:
     plt.clf()
     show_recons(test_images, recons)
 
-if 0:
+if 1:
     # save parameters
     d = {}
     d['weights'] = [auto.W.get_value() for auto in deep.autos]
@@ -141,7 +142,7 @@ if 0:
         d['rec_biases'] = [auto.b.get_value() for auto in deep.autos]
     d['Wc'] = deep.W
     d['bc'] = deep.b
-    np.savez('lif-126-error.npz', **d)
+    np.savez(results_dir + '/params.npz', **d)
 
 if 0:
     # compute top layers mean and std

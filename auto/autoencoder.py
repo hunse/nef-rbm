@@ -269,7 +269,7 @@ class Autoencoder(FileObject):
                 costs.append(train_dbn(batch))
                 self.check_params()
 
-            print "Epoch %d: %0.3f (sparsity: pop: %0.3f, life: %0.3f)" % (epoch, np.mean(costs))
+            print "Epoch %d: %0.3f" % (epoch, np.mean(costs))
 
             if deep is not None and test_images is not None:
                 # plot reconstructions on test set

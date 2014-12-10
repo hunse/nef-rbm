@@ -27,22 +27,26 @@ def forward(x, weights, biases):
         layers.append(x)
     return x, layers
 
-def get_image(t):
-    return test_images[int(t / presentation_time)]
+def get_index(t):
+    return min(int(t / presentation_time), n_test - 1)
 
-def test_dots(t, dots):
-    i = int(t / presentation_time)
-    j = np.argmax(dots)
-    return test_labels[i] == labels[j]
+def get_image(t):
+    return test_images[get_index(t)]
+
+def test_classifier(t, dots):
+    return test_labels[get_index(t)] == labels[np.argmax(dots)]
 
 # --- load the RBM data
 # data = np.load('nlif-deep-orig.npz')
 # data = np.load('lif-500-200-10.npz')
-data = np.load('lif-126-error.npz')
+# data = np.load('lif-126-error.npz')
+data = np.load('results/params.npz')
 weights = data['weights']
 biases = data['biases']
 Wc = data['Wc']
 bc = data['bc']
+
+print [len(b) for b in biases] + [len(bc)]
 
 # --- load the testing data
 from autoencoder import mnist
@@ -57,6 +61,7 @@ rng = np.random.RandomState(92)
 inds = rng.permutation(len(test_images))
 test_images = test_images[inds]
 test_labels = test_labels[inds]
+n_test = len(test_images)
 
 labels = np.unique(test_labels)
 n_labels = labels.size
@@ -99,7 +104,6 @@ intercept = 0
 amp = 1. / max_rate
 assert np.allclose(neuron_type.gain_bias(max_rate, intercept), (1, 1), atol=1e-2)
 
-dt = 1e-3
 model = nengo.Network(seed=97)
 with model:
     input_images = nengo.Node(output=get_image, label='images')
@@ -119,7 +123,7 @@ with model:
                              transform=W.T, synapse=pstc)
         else:
             nengo.Connection(layers[-1].neurons, layer.neurons,
-                             transform=W.T * amp / dt, synapse=pstc)
+                             transform=W.T * amp, synapse=pstc)
 
         layers.append(layer)
 
@@ -128,34 +132,32 @@ with model:
     class_bias = nengo.Node(output=bc)
     nengo.Connection(class_bias, class_layer.input, synapse=0)
     nengo.Connection(layers[-1].neurons, class_layer.input,
-                     transform=Wc.T * amp / dt, synapse=pstc)
+                     transform=Wc.T * amp, synapse=pstc)
 
-    test = nengo.Node(output=test_dots, size_in=n_labels)
+    test = nengo.Node(output=test_classifier, size_in=n_labels)
     nengo.Connection(class_layer.output, test)
 
     # --- make centroid classifier node
     def centroid_test_fn(t, x):
-        i = int(t / presentation_time)
         d = ((x - code_means)**2).sum(1)
-        return test_labels[i] == labels[np.argmin(d)]
+        return test_labels[get_index(t)] == labels[np.argmin(d)]
 
     centroid_test = nengo.Node(centroid_test_fn, size_in=layers[-1].n_neurons)
     nengo.Connection(layers[-1].neurons, centroid_test,
-                     transform=amp / dt, synapse=pstc)
+                     transform=amp, synapse=pstc)
 
     # --- make dot classifier node
     def dot_test_fn(t, x):
-        i = int(t / presentation_time)
         # d = np.dot(code_means, x)
         d = np.dot(code_means - code_mean, x - code_mean)
-        return test_labels[i] == labels[np.argmax(d)]
+        return test_labels[get_index(t)] == labels[np.argmax(d)]
 
     dot_test = nengo.Node(dot_test_fn, size_in=layers[-1].n_neurons)
     nengo.Connection(layers[-1].neurons, dot_test,
-                     transform=amp / dt, synapse=pstc)
+                     transform=amp, synapse=pstc)
 
     # --- make probes
-    probe_layers = [nengo.Probe(layer, 'spikes') for layer in layers]
+    probe_layers = [nengo.Probe(layer.neurons) for layer in layers]
     probe_class = nengo.Probe(class_layer.output, synapse=0.03)
     probe_test = nengo.Probe(test, synapse=0.01)
     probe_centroid = nengo.Probe(centroid_test, synapse=0.01)
@@ -163,71 +165,13 @@ with model:
 
 
 # --- simulation
-sim = nengo.Simulator(model, dt=dt)
-sim.run(100., progress=True)
-# sim.run(5.)
-# sim.run(1., progress=True)
+sim = nengo.Simulator(model)
+sim.run(1000., progress_bar=None)
+# sim.run(100.)
+# sim.run(10.)
+# sim.run(1.)
 
 t = sim.trange()
-
-# --- plots
-from nengo.utils.matplotlib import rasterplot
-
-def plot_bars():
-    ylim = plt.ylim()
-    for x in np.arange(0, t[-1], presentation_time):
-        plt.plot([x, x], ylim, 'k--')
-
-inds = slice(0, int(t[-1]/presentation_time) + 1)
-images = test_images[inds]
-labels = test_labels[inds]
-allimage = np.zeros((28, 28 * len(images)), dtype=images.dtype)
-for i, image in enumerate(images):
-    allimage[:, i * 28:(i + 1) * 28] = image.reshape(28, 28)
-
-plt.figure(1)
-plt.clf()
-r, c = 6, 1
-
-plt.subplot(r, c, 1)
-plt.imshow(allimage, aspect='auto', interpolation='none', cmap='gray')
-plt.xticks([])
-plt.yticks([])
-
-plt.subplot(r, c, 2)
-rasterplot(t, sim.data[probe_layers[0]][:,:200])
-plot_bars()
-plt.xticks([])
-plt.ylabel('layer 1 (500)')
-
-plt.subplot(r, c, 3)
-rasterplot(t, sim.data[probe_layers[1]])
-plt.xticks([])
-plt.yticks(np.linspace(0, 200, 5))
-plot_bars()
-plt.ylabel('layer 2 (200)')
-
-plt.subplot(r, c, 4)
-plt.plot(t, sim.data[probe_class])
-plot_bars()
-plt.ylabel('class')
-
-plt.subplot(r, c, 5)
-plt.plot(t, sim.data[probe_test])
-plt.ylim([-0.1, 1.1])
-plot_bars()
-plt.ylabel('correct')
-
-plt.subplot(r, c, 6)
-plt.plot(t, sim.data[probe_dot])
-plt.ylim([-0.1, 1.1])
-plot_bars()
-plt.xlabel('time [s]')
-plt.ylabel('correct')
-
-plt.tight_layout()
-
-plt.savefig('run_lif_nocode.png')
 
 # --- compute error rate
 zblocks = sim.data[probe_test].reshape(-1, 100)[:, 50:]  # 50 ms blocks at end of each 100
@@ -246,3 +190,63 @@ print "Neuron dot error:", errors.mean()
 # zblocks = z2.reshape(-1, 100)[:, 80:]  # 20 ms blocks at end of each 100
 # errors = np.mean(zblocks, axis=1) < 0.5
 # print errors.mean()
+
+# --- plots
+if sim.time <= 5:
+    from nengo.utils.matplotlib import rasterplot
+
+    def plot_bars():
+        ylim = plt.ylim()
+        for x in np.arange(0, t[-1], presentation_time):
+            plt.plot([x, x], ylim, 'k--')
+
+    inds = slice(0, int(t[-1]/presentation_time) + 1)
+    images = test_images[inds]
+    labels = test_labels[inds]
+    allimage = np.zeros((28, 28 * len(images)), dtype=images.dtype)
+    for i, image in enumerate(images):
+        allimage[:, i * 28:(i + 1) * 28] = image.reshape(28, 28)
+
+    plt.figure(1)
+    plt.clf()
+    r, c = 6, 1
+
+    plt.subplot(r, c, 1)
+    plt.imshow(allimage, aspect='auto', interpolation='none', cmap='gray')
+    plt.xticks([])
+    plt.yticks([])
+
+    plt.subplot(r, c, 2)
+    rasterplot(t, sim.data[probe_layers[0]][:,:200])
+    plot_bars()
+    plt.xticks([])
+    plt.ylabel('layer 1 (500)')
+
+    plt.subplot(r, c, 3)
+    rasterplot(t, sim.data[probe_layers[1]])
+    plt.xticks([])
+    plt.yticks(np.linspace(0, 200, 5))
+    plot_bars()
+    plt.ylabel('layer 2 (200)')
+
+    plt.subplot(r, c, 4)
+    plt.plot(t, sim.data[probe_class])
+    plot_bars()
+    plt.ylabel('class')
+
+    plt.subplot(r, c, 5)
+    plt.plot(t, sim.data[probe_test])
+    plt.ylim([-0.1, 1.1])
+    plot_bars()
+    plt.ylabel('correct')
+
+    plt.subplot(r, c, 6)
+    plt.plot(t, sim.data[probe_dot])
+    plt.ylim([-0.1, 1.1])
+    plot_bars()
+    plt.xlabel('time [s]')
+    plt.ylabel('correct')
+
+    plt.tight_layout()
+
+    plt.savefig('run_lif_nocode.png')
