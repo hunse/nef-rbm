@@ -42,7 +42,7 @@ def get_mnist():
 
 
 class Convnet(object):
-    def __init__(self, chan, filters=[6], pooling=[2], rng=np.random):
+    def __init__(self, size, chan, filters=[6], pooling=[2], rng=np.random):
         from theano import shared
 
         outputs = 10
@@ -51,30 +51,29 @@ class Convnet(object):
         assert len(pooling) == n_layers
 
         pool_size = lambda x, p: int(np.ceil(x / float(p)))
-        sizes = [32]
-        sizes.append(pool_size(sizes[-1] - (rfs[0] - 1), pooling[0]))
+        sizes = [size]
+        chs = [chan] + filters
+        weights = []
+        biases = []
+        for i in range(n_layers):
+            weights.append(shared(
+                rng.randn(chs[i+1], chs[i], rfs[i], rfs[i]
+                      ).astype(dtype) * np.sqrt(6. / 25)))
+            biases.append(shared(np.zeros(chs[i+1], dtype=dtype)))
+            sizes.append(pool_size(sizes[i] - (rfs[i] - 1), pooling[i]))
 
-        w0 = shared(rng.randn(filters[0], chan, rfs[0], rfs[0]).astype(dtype) * np.sqrt(6. / 25))
-        b0 = shared(np.zeros(filters[0], dtype=dtype))
-
-        if n_layers >= 2:
-            w1 = shared(rng.randn(filters[1], filters[0], rfs[1], rfs[1]).astype(dtype) * np.sqrt(6. / 25))
-            b1 = shared(np.zeros(filters[1], dtype=dtype))
-            sizes.append(pool_size(sizes[-1] - (rfs[1] - 1), pooling[1]))
-
-        print sizes
         nwc = sizes[-1]**2 * filters[-1]
-        print "nwc", nwc
         wc = shared(rng.normal(scale=0.1, size=(nwc, outputs)).astype(dtype))
         bc = shared(np.zeros(outputs, dtype=dtype))
 
+        self.channels_in = chan
         self.filters = filters
         self.pooling = pooling
         self.sizes = sizes
         self.rfs = rfs
 
-        self.weights = [w0] + ([w1] if n_layers >= 2 else [])
-        self.biases = [b0] + ([b1] if n_layers >= 2 else [])
+        self.weights = weights
+        self.biases = biases
         self.wc = wc
         self.bc = bc
 
@@ -111,31 +110,20 @@ class Convnet(object):
         sx = tt.tensor4()
         sy = tt.ivector()
 
-        filters = self.filters
         pooling = self.pooling
         sizes = self.sizes
         rfs = self.rfs
-
+        chs = [self.channels_in] + self.filters
         n_layers = len(self.weights)
-        assert len(filters) == n_layers and len(pooling) == n_layers
 
-        def propup(size):
-            # c0 = conv2d(sx, w0, image_shape=(size, chan, sizes[0], sizes[0]))
-            c0 = conv2d(sx, self.weights[0],
-                        image_shape=(size, chan, sizes[0], sizes[0]),
-                        filter_shape=(filters[0], chan, rfs[0], rfs[0]))
-            t0 = tanh(c0 + self.biases[0].dimshuffle(0, 'x', 'x'))
-            s0 = tanh(max_pool_2d(t0, (pooling[0], pooling[0])))
-            y = s0
-
-            if n_layers >= 2:
-                # c1 = conv2d(s0, w1, image_shape=(size, chan, sizes[1], sizes[1]))
-                c1 = conv2d(s0, self.weights[1],
-                            image_shape=(size, chan, sizes[1], sizes[1]),
-                            filter_shape=(6, chan, rfs[1], rfs[1]))
-                t1 = tanh(c1 + self.biases[1].dimshuffle(0, 'x', 'x'))
-                s1 = tanh(max_pool_2d(t1, (pooling[1], pooling[1])))
-                y = s1
+        def propup(batchsize):
+            y = sx
+            for i in range(n_layers):
+                c = conv2d(y, self.weights[i],
+                           image_shape=(batchsize, chs[i], sizes[i], sizes[i]),
+                           filter_shape=(chs[i+1], chs[i], rfs[i], rfs[i]))
+                t = tanh(c + self.biases[i].dimshuffle(0, 'x', 'x'))
+                y = tanh(max_pool_2d(t, (pooling[i], pooling[i])))
 
             return dot(y.flatten(2), self.wc) + self.bc
 
@@ -163,6 +151,8 @@ class Convnet(object):
 
 [train_images, train_labels], [test_images, test_labels] = get_mnist()
 chan = train_images.shape[1]
+size = train_images.shape[2]
+assert size == train_images.shape[3]
 
 if 0:
     def show(image, ax=None):
@@ -187,12 +177,12 @@ test_batches = test_images.reshape(-1, test_size, *test_images.shape[1:])
 test_batch_labels = test_labels.reshape(-1, test_size)
 
 # --- mnist
-net = Convnet(chan, filters=[10], pooling=[3])
-# train, test = get_train(batch_size, test_size, chan, filters=[6, 16], pooling=[2, 2], alpha=0.01)
+net = Convnet(size, chan, filters=[10], pooling=[3])
+# net = Convnet(size, chan, filters=[6, 16], pooling=[2, 2])
 
 train, test = net.get_train(batch_size, test_size, alpha=5e-2)
 
-n_epochs = 1
+n_epochs = 50
 for epoch in range(n_epochs):
     cost = 0.0
     error = 0.0
@@ -208,7 +198,7 @@ for epoch in range(n_epochs):
 error = np.mean([test(x, y) for x, y in zip(test_batches, test_batch_labels)])
 print "Test error: %f" % error
 
-net.save('mnist-base.npz')
+# net.save('mnist-base.npz')
 
 # net2 = Convnet.load('mnist-base.npz')
 # _, test2 = net2.get_train(batch_size, test_size)
