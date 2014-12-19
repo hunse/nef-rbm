@@ -9,6 +9,8 @@ import theano.tensor as tt
 
 dtype = theano.config.floatX
 
+import whiten
+
 
 def get_cifar10():
     from skdata.cifar10.dataset import CIFAR10
@@ -29,6 +31,9 @@ def get_cifar10():
 
         # roll channel dimension before shape dimensions
         images = np.rollaxis(images, -1, 1)
+
+        # whiten
+        # images = whiten.zca(images, dtype=dtype)
 
         return images
 
@@ -176,6 +181,7 @@ test_batch_labels = test_labels.reshape(-1, test_size)
 # --- cifar
 # train, test = get_train(batch_size, test_size, chan, filters=[32], pooling=[3])
 train, test = get_train(batch_size, test_size, chan, filters=[32, 32], pooling=[3, 3], alpha=0.01)
+# train, test = get_train(batch_size, test_size, chan, filters=[32, 32], pooling=[3, 3], alpha=0.05)
 
 n_epochs = 50
 for epoch in range(n_epochs):
