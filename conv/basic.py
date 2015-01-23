@@ -33,7 +33,7 @@ def get_cifar10():
         images = np.rollaxis(images, -1, 1)
 
         # whiten
-        # images = whiten.zca(images, dtype=dtype)
+        images = whiten.zca(images, dtype=dtype)
 
         return images
 
@@ -152,7 +152,7 @@ else:
     [train_images, train_labels], [test_images, test_labels] = get_mnist()
 chan = train_images.shape[1]
 
-if 0:
+if 1:
     def show(image, ax=None):
         ax = plt.gca() if ax is None else ax
         if image.shape[0] == 1:
