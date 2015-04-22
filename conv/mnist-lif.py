@@ -125,8 +125,8 @@ class Convnet(object):
         from theano.tensor import lscalar, tanh, dot, grad, log, arange
         from theano.tensor.nnet import softmax
         from theano.tensor.nnet.conv import conv2d
-        from theano.tensor.signal.downsample import max_pool_2d
         from hinge import multi_hinge_margin
+        from pooling import max_pool_2d, average_pool_2d, power_pool_2d
 
         sx = tt.tensor4()
         sy = tt.ivector()
@@ -149,17 +149,9 @@ class Convnet(object):
                 t = self.f(c + self.biases[i].dimshuffle(0, 'x', 'x'))
 
                 p = pooling[i]
-                s = csizes[i]
-                if s % p != 0:
-                    n = int(s / p) * p + p  # target size
-                    r = n - s
-                    t = tt.concatenate([t, tt.zeros((batchsize, chs[i+1], r, s))], axis=2)
-                    t = tt.concatenate([t, tt.zeros((batchsize, chs[i+1], n, r))], axis=3)
-
-                # n = int(s / p) * p
-                y = t[:, :, ::p, ::p]
-                for j in range(1, p):
-                    y += t[:, :, j::p, j::p]
+                y = max_pool_2d(t, (p, p))
+                # y = average_pool_2d(t, (p, p))
+                # y = power_pool_2d(t, (p, p), p=3, b=0.1)
 
             return dot(y.flatten(2), self.wc) + self.bc
 
