@@ -1,21 +1,40 @@
-"""Training a basic convolutional net on the MNIST dataset.
+"""Training a basic convolutional net on the CIFAR-10 dataset.
 """
-
+import collections
 import os
 import warnings
 
 import numpy as np
 
-os.environ['THEANO_FLAGS'] = 'device=gpu, floatX=float32'
+# os.environ['THEANO_FLAGS'] = 'device=gpu, floatX=float32'
+os.environ['THEANO_FLAGS'] = 'device=gpu, floatX=float32, exception_verbosity=high'
 import theano
 import theano.tensor as tt
+import theano.sandbox.rng_mrg
 dtype = theano.config.floatX
 
 import whiten
 
+t_rng = theano.sandbox.rng_mrg.MRG_RandomStreams()
 
-def relu(x):
-    return tt.maximum(x, 0)
+def relu(x, noise=False):
+    # return tt.maximum(x, 0)
+    return tt.minimum(tt.maximum(x, 0), 6)
+
+
+# def relu(x, noise=False):
+#     # return tt.maximum(x, 0)
+#     # return tt.minimum(tt.maximum(x, 0), 6)
+
+#     if noise:
+#         x = x + t_rng.normal(size=x.shape, std=0.1)
+
+#     # y = tt.minimum(tt.maximum(x, 0), 6)
+#     y = tt.minimum(tt.maximum(x, 0), 1)
+#     # std = tt.and_(tt.gt(y, 0), tt.lt(y, 6))
+#     # y +=
+
+#     return y
 
 
 def get_cifar10():
@@ -58,18 +77,24 @@ class Convnet(object):
         sizes = [size]
         chs = [chan] + filters
         weights = []
-        weights_m = []  # weight momentums
+        d_weights = {}  # last change in weight (for momentum)
         biases = []
         for i in range(n_layers):
             shape = (chs[i+1], chs[i], rfs[i], rfs[i])
-            weights.append(shared(rng.randn(*shape).astype(dtype) * initW[i]))
-            weights_m.append(shared(np.zeros(shape, dtype=dtype)))
-            biases.append(shared(np.zeros(chs[i+1], dtype=dtype)))
             sizes.append(pool_size(sizes[i] - (rfs[i] - 1), pooling[i]))
+
+            weights.append(shared(rng.randn(*shape).astype(dtype) * initW[i]))
+            d_weights[weights[i]] = shared(np.zeros(shape, dtype=dtype))
+
+            # init biases to 1 to speed initial learning (Krizhevsky 2012)
+            biases.append(shared(np.zeros(chs[i+1], dtype=dtype)))
+            # biases.append(shared(np.ones(chs[i+1], dtype=dtype)))
 
         nwc = sizes[-1]**2 * filters[-1]
         wc = shared(rng.normal(scale=0.1, size=(nwc, outputs)).astype(dtype))
         bc = shared(np.zeros(outputs, dtype=dtype))
+
+        self.alpha = shared(np.array(0.01, dtype=dtype))
 
         self.channels_in = chan
         self.filters = filters
@@ -78,7 +103,7 @@ class Convnet(object):
         self.rfs = rfs
 
         self.weights = weights
-        self.weights_m = weights_m
+        self.d_weights = d_weights
         self.biases = biases
         self.wc = wc
         self.bc = bc
@@ -110,8 +135,10 @@ class Convnet(object):
         from theano.tensor import lscalar, tanh, dot, grad, log, arange
         from theano.tensor.nnet import softmax
         from theano.tensor.nnet.conv import conv2d
-        from theano.tensor.signal.downsample import max_pool_2d
         from hinge import multi_hinge_margin
+        from pooling import max_pool_2d, average_pool_2d, power_pool_2d
+
+        self.alpha.set_value(alpha)
 
         sx = tt.tensor4()
         sy = tt.ivector()
@@ -122,7 +149,7 @@ class Convnet(object):
         chs = [self.channels_in] + self.filters
         n_layers = len(self.weights)
 
-        def propup(batchsize):
+        def propup(batchsize, noise=False):
             y = sx
             for i in range(n_layers):
                 c = conv2d(y, self.weights[i],
@@ -131,33 +158,46 @@ class Convnet(object):
                 # t = tanh(c + self.biases[i].dimshuffle(0, 'x', 'x'))
                 # y = tanh(max_pool_2d(t, (pooling[i], pooling[i])))
 
-                t = relu(c + self.biases[i].dimshuffle(0, 'x', 'x'))
-                y = relu(max_pool_2d(t, (pooling[i], pooling[i])))
+                t = relu(c + self.biases[i].dimshuffle(0, 'x', 'x'), noise=noise)
+                # t = c + self.biases[i].dimshuffle(0, 'x', 'x')
+                # y = relu(max_pool_2d(t, (pooling[i], pooling[i])))
+
+                y = max_pool_2d(t, (pooling[i], pooling[i]))
+                # y = average_pool_2d(t, (pooling[i], pooling[i]))
+                # y = power_pool_2d(t, (pooling[i], pooling[i]), p=2, b=0.001)
 
             return dot(y.flatten(2), self.wc) + self.bc
 
-        yc = propup(batchsize)
+        yc = propup(batchsize, noise=True)
         if 1:
             cost = -log(softmax(yc))[arange(sy.shape[0]), sy].mean()
         else:
             cost = multi_hinge_margin(yc, sy).mean()
         error = tt.neq(tt.argmax(yc, axis=1), sy).mean()
 
+        # get updates
         params = self.params
         gparams = grad(cost, params)
+        updates = collections.OrderedDict()
 
-        updates = []
+        momentum = 0.9
+        decay = 0.0005
         for p, gp in zip(params, gparams):
-            if p in self.weights:
-                pass # TODO: updates with momentum
 
+            if p in self.weights:
+                dp = self.d_weights[p]
+                updates[dp] = momentum * dp - (1 - momentum) * gp
+                updates[p] = p + self.alpha * updates[dp]
+                # updates[dp] = momentum * dp - self.alpha * (decay * p + gp)
+                # updates[p] = p + updates[dp]
+            else:
+                updates[p] = p - self.alpha * gp
 
         train = theano.function(
-            [sx, sy], [cost, error],
-            updates=[(p, p - alpha * gp) for p, gp in zip(params, gparams)])
+            [sx, sy], [cost, error], updates=updates)
 
         # --- make test function
-        y_pred = tt.argmax(propup(testsize), axis=1)
+        y_pred = tt.argmax(propup(testsize, noise=False), axis=1)
         error = tt.mean(tt.neq(y_pred, sy))
         test = theano.function([sx, sy], error)
 
@@ -200,15 +240,22 @@ test_size = 1000
 test_batches = test_images.reshape(-1, test_size, *test_images.shape[1:])
 test_batch_labels = test_labels.reshape(-1, test_size)
 
-# --- mnist
 # net = Convnet(size, chan, filters=[10], pooling=[3])
 # net = Convnet(size, chan, filters=[32, 32], pooling=[3, 3])
-net = Convnet(size, chan, filters=[32, 32], rfs=[5, 5], pooling=[3, 3], initW=[0.0001, 0.01])
+# net = Convnet(size, chan, filters=[32, 32], rfs=[5, 5], pooling=[3, 3], initW=[0.0001, 0.01])
+# net = Convnet(size, chan, filters=[32], rfs=[5], pooling=[3], initW=[0.0001])
+
+net = Convnet(size, chan, filters=[32, 32], rfs=[9, 5], pooling=[3, 2], initW=[0.0001, 0.01])
+
 
 train, test = net.get_train(batch_size, test_size, alpha=5e-2)
 # train, test = net.get_train(batch_size, test_size, alpha=5e-3)
 
+print "Starting..."
 n_epochs = 50
+# train_errors
+test_errors = -np.ones(n_epochs)
+
 for epoch in range(n_epochs):
     cost = 0.0
     error = 0.0
@@ -218,8 +265,12 @@ for epoch in range(n_epochs):
         error += errori
     error /= batches.shape[0]
 
-    test_error = test(test_batches[0], test_batch_labels[0])
-    print "Epoch %d: %f, %f, %f" % (epoch, cost, error, test_error)
+    test_errors[epoch] = test(test_batches[0], test_batch_labels[0])
+    print "Epoch %d (alpha=%0.1e): %f, %f, %f" % (
+        epoch, net.alpha.get_value(), cost, error, test_errors[epoch])
+
+    if epoch > 0 and test_errors[epoch] >= test_errors[epoch-1]:
+        net.alpha.set_value(net.alpha.get_value() / np.array(10., dtype=dtype))
 
 error = np.mean([test(x, y) for x, y in zip(test_batches, test_batch_labels)])
 print "Test error: %f" % error
