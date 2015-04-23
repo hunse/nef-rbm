@@ -1,4 +1,7 @@
 """Training a basic convolutional net on the CIFAR-10 dataset.
+
+Notes:
+- Weight cost is important, especially in early training to avoid instability.
 """
 import collections
 import os
@@ -49,12 +52,46 @@ def get_cifar10(white=True):
     return train, valid, test
 
 
-class ConvLayer(object):
-    def __init__(self, filters, filter_size=5, pooling=2, initW=0.0001, initB=0.1):
+class Layer(object):
+    # def __init__(self, epsW=0.001, epsB=0.002, momW=0.9, momB=0.9, initW=0.0001, initB=0.1, wc=0.0):
+    def __init__(self, epsW=0.01, epsB=0.02, momW=0.9, momB=0.9, initW=0.0001, initB=0.1, wc=0.0):
+        self.epsW = epsW
+        self.epsB = epsB
+        self.momW = momW
+        self.momB = momB
+        self.initW = initW
+        self.initB = initB
+        self.wc = wc
+
+    def build(self, shape_in, rng=None):
+        self.epsW = theano.shared(np.array(self.epsW, dtype=dtype))
+        self.epsB = theano.shared(np.array(self.epsB, dtype=dtype))
+        self.dweights = theano.shared(
+            np.zeros_like(self.weights.get_value(borrow=True)))
+        self.dbiases = theano.shared(
+            np.zeros_like(self.biases.get_value(borrow=True)))
+
+    def updates(self, grads):
+        # updates[dp] = momentum * dp - (1 - momentum) * gp
+        # updates[p] = p + self.alpha * updates[dp]
+        # updates[dp] = momentum * dp - self.alpha * (decay * p + gp)
+        # updates[p] = p + updates[dp]
+
+        u = collections.OrderedDict()
+        u[self.dweights] = self.momW * self.dweights - self.epsW * (
+            self.wc * self.weights + grads[self.weights])
+        u[self.weights] = self.weights + u[self.dweights]
+        u[self.dbiases] = self.momB * self.dbiases - self.epsB * grads[self.biases]
+        u[self.biases] = self.biases + u[self.dbiases]
+        return u
+
+
+class ConvLayer(Layer):
+    def __init__(self, filters, filter_size=5, pooling=2, **kwargs):
+        Layer.__init__(self, **kwargs)
         self.filters = filters
         self.filter_size = filter_size
         self.pooling = pooling
-        self.initW = initW
 
     def build(self, shape_in, rng=None):
         from theano import shared
@@ -64,11 +101,9 @@ class ConvLayer(object):
 
         self.weights = shared(
             rng.randn(*self.filter_shape).astype(dtype) * self.initW)
+        self.biases = shared(np.ones(self.filters, dtype=dtype) * self.initB)
 
-        # init biases to 1 to speed initial learning (Krizhevsky 2012)
-        # biases.append(shared(np.zeros(chs[i+1], dtype=dtype)))
-        # biases.append(shared(np.ones(chs[i+1], dtype=dtype)))  # doesn't work
-        self.biases = shared(0.1 * np.ones(self.filters, dtype=dtype))
+        Layer.build(self, shape_in, rng=rng)
 
     @property
     def filter_shape(self):
@@ -108,9 +143,41 @@ class ConvLayer(object):
         return y
 
 
-class Convnet(object):
-    def __init__(self, shape_in, layers, rng=np.random):
+class FullLayer(Layer):
+    def __init__(self, outputs, neuron=None, **kwargs):
+        Layer.__init__(self, **kwargs)
+        self.outputs = outputs
+        self.neuron = neuron
+
+    def build(self, shape_in, rng=None):
         from theano import shared
+
+        shape = (np.prod(shape_in), self.outputs)
+        self.weights = shared(rng.randn(*shape).astype(dtype) * self.initW)
+        self.biases = shared(np.ones(self.outputs, dtype=dtype) * self.initB)
+
+        Layer.build(self, shape_in, rng=rng)
+
+    @property
+    def shape_out(self):
+        return (self.outputs,)
+
+    @property
+    def size_out(self):
+        return np.prod(self.shape_out)
+
+    def __call__(self, x, batchsize, noise=False):
+        y = tt.dot(x.flatten(2), self.weights) + self.biases
+        if self.neuron is not None:
+            y = self.neuron(y, noise=noise)
+        return y
+
+
+class Convnet(object):
+    def __init__(self, shape_in, layers, rng=None):
+        from theano import shared
+        if rng is None:
+            rng = np.random.RandomState(9)
 
         self.shape_in = shape_in
         self.layers = layers
@@ -119,54 +186,10 @@ class Convnet(object):
             layer.build(shape_in, rng=rng)
             shape_in = layer.shape_out
 
-        # # fully connected layers
-        # fc = [2048, 2048]
-        # for i, size_out in enumerate(fc):
-        #     size_in = flat_size(sizes[-1], filters[-1], types[-1])
-        #     shape = (size_in, size_out)
-
-        #     types.append('fc')
-        #     sizes.append(size_out)
-        #     rfs.append(0)
-        #     filters.append(-1)
-
-        #     weights.append(shared(rng.randn(*shape).astype(dtype) * 0.04))
-        #     d_params[weights[i]] = shared(np.zeros(shape, dtype=dtype))
-
-        #     biases.append(shared(0.1 * np.ones(chs[i+1], dtype=dtype)))
-
-        # # classifier layer
-        # outputs = 10
-        # size_in = flat_size(sizes[-1], filters[-1], types[-1])
-        # types.append('fc')
-        # weights.append(shared(rng.randn(*shape).astype(dtype) * 0.1))
-        # biases.append(shared(0.01 * np.ones(outputs, dtype=dtype)))
-
-        d_params = {}
-        for layer in self.layers:
-            d_params[layer.weights] = shared(
-                np.zeros_like(layer.weights.get_value(borrow=True)))
-
-        outputs = 10
-        size_in = self.layers[-1].size_out
-        wc = shared(rng.normal(scale=0.1, size=(size_in, outputs)).astype(dtype))
-        bc = shared(np.zeros(outputs, dtype=dtype))
-
-        # weights.append(wc)
-        # weights.append(bc)
-
-        self.alpha = shared(np.array(0.01, dtype=dtype))
-
-        self.d_params = d_params
-        self.wc = wc
-        self.bc = bc
-
     @property
     def params(self):
-        # return self.weights + self.biases
-        # return self.weights + self.biases + [self.wc, self.bc]
         return ([l.weights for l in self.layers] +
-                [l.biases for l in self.layers] + [self.wc, self.bc])
+                [l.biases for l in self.layers])
 
     # def save(self, filename):
     #     d = dict(self.__dict__)
@@ -188,14 +211,12 @@ class Convnet(object):
     #     # self.bc = theano.shared(self.bc)
     #     return self
 
-    def get_train(self, batchsize, testsize, alpha=5e-2):
+    def get_train(self, batchsize, testsize):
         from theano.tensor import lscalar, tanh, dot, grad, log, arange
         from theano.tensor.nnet import softmax
         from theano.tensor.nnet.conv import conv2d
         from hinge import multi_hinge_margin
         from pooling import max_pool_2d, average_pool_2d, power_pool_2d
-
-        self.alpha.set_value(alpha)
 
         sx = tt.tensor4()
         sy = tt.ivector()
@@ -204,24 +225,7 @@ class Convnet(object):
             y = sx
             for layer in self.layers:
                 y = layer(y, batchsize, noise=noise)
-
-            # for i in range(n_layers):
-            #     if self.types[i] == 'conv':
-            #     elif self.types[i] == 'fc':
-            #         if i == 0 or self.types[i-1] == 'conv':
-            #             y = y.flatten(2)
-            #         y = dot(y, self.weights[i]) + self.biases[i]
-            #         if i < n_layers - 1:
-            #             y = relu(y)
-            #     else:
-            #         raise ValueError("Unrecognized type '%s'" % self.types[i])
-
-            # fully connected layers
-            # y = dot(y, self.
-
-            y = y.flatten(2)
-            return dot(y, self.wc) + self.bc
-            # return y
+            return y
 
         yc = propup(batchsize, noise=True)
         if 1:
@@ -232,20 +236,10 @@ class Convnet(object):
 
         # get updates
         params = self.params
-        gparams = grad(cost, params)
+        grads = dict(zip(params, grad(cost, params)))
         updates = collections.OrderedDict()
-
-        momentum = 0.9
-        decay = 0.0005
-        for p, gp in zip(params, gparams):
-            if p in self.d_params:
-                dp = self.d_params[p]
-                # updates[dp] = momentum * dp - (1 - momentum) * gp
-                # updates[p] = p + self.alpha * updates[dp]
-                updates[dp] = momentum * dp - self.alpha * (decay * p + gp)
-                updates[p] = p + updates[dp]
-            else:
-                updates[p] = p - self.alpha * gp
+        for layer in self.layers:
+            updates.update(layer.updates(grads))
 
         train = theano.function(
             [sx, sy], [cost, error], updates=updates)
@@ -282,6 +276,8 @@ test_batch_y = test_y.reshape(-1, test_size)
 layers = [
     ConvLayer(filters=32, filter_size=9, pooling=3, initW=0.0001),
     ConvLayer(filters=32, filter_size=5, pooling=2, initW=0.01),
+    # FullLayer(outputs=2048, initW=0.01, wc=0.004),
+    FullLayer(outputs=10, initW=0.1, initB=0., wc=0.01),
     ]
 
 # layers = [
@@ -290,12 +286,10 @@ layers = [
 #     ]
 
 net = Convnet(train_x.shape[1:], layers)
-train, test = net.get_train(batch_size, test_size, alpha=5e-2)
-# train, test = net.get_train(batch_size, test_size, alpha=5e-3)
+train, test = net.get_train(batch_size, test_size)
 
 print "Starting..."
 n_epochs = 50
-# train_errors
 test_errors = -np.ones(n_epochs)
 
 for epoch in range(n_epochs):
@@ -308,13 +302,17 @@ for epoch in range(n_epochs):
     error /= batch_x.shape[0]
 
     test_errors[epoch] = test(test_batch_x[0], test_batch_y[0])
-    print "Epoch %d (alpha=%0.1e): %f, %f, %f" % (
-        epoch, net.alpha.get_value(), cost, error, test_errors[epoch])
+    eps = net.layers[0].epsW.get_value().item()
+    print "Epoch %d (eps=%0.1e): %f, %f, %f" % (
+        epoch, eps, cost, error, test_errors[epoch])
 
     if epoch > 0 and test_errors[epoch] >= test_errors[epoch-1]:
-        new_alpha = net.alpha.get_value() / 10
-        net.alpha.set_value(np.array(new_alpha, dtype=net.alpha.dtype))
-        if new_alpha < 1e-8:
+        for layer in net.layers:
+            div = np.array(10., dtype=dtype)
+            layer.epsW.set_value(layer.epsW.get_value() / div)
+            layer.epsB.set_value(layer.epsB.get_value() / div)
+
+        if any(layer.epsW.get_value() < 1e-8 for layer in net.layers):
             break
 
 error = np.mean([test(x, y) for x, y in zip(test_batch_x, test_batch_y)])
